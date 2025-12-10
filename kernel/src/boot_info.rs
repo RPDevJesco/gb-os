@@ -14,6 +14,9 @@
 //! 0x14    4     Screen height (200)
 //! 0x18    4     Bits per pixel (8)
 //! 0x1C    4     Pitch (320)
+//! 0x20    4     ROM address (0 if no ROM)
+//! 0x24    4     ROM size in bytes
+//! 0x28    32    ROM title (null-terminated)
 //! ```
 
 /// Magic value: 'GBOY' in little-endian
@@ -39,6 +42,10 @@ pub struct BootInfo {
     pub bits_per_pixel: u32,
     /// Pitch: bytes per scanline
     pub pitch: u32,
+    /// ROM address (0 if no ROM loaded)
+    pub rom_addr: u32,
+    /// ROM size in bytes
+    pub rom_size: u32,
 }
 
 /// Raw boot info structure as stored in memory
@@ -52,6 +59,9 @@ pub struct RawBootInfo {
     pub screen_height: u32,
     pub bits_per_pixel: u32,
     pub pitch: u32,
+    pub rom_addr: u32,
+    pub rom_size: u32,
+    pub rom_title: [u8; 32],
 }
 
 impl BootInfo {
@@ -73,6 +83,8 @@ impl BootInfo {
             screen_height: raw.screen_height,
             bits_per_pixel: raw.bits_per_pixel,
             pitch: raw.pitch,
+            rom_addr: raw.rom_addr,
+            rom_size: raw.rom_size,
         }
     }
 
@@ -84,6 +96,40 @@ impl BootInfo {
     /// Check if we're in VGA mode 13h
     pub fn is_mode_13h(&self) -> bool {
         self.vga_mode == 0x13
+    }
+
+    /// Check if a ROM is loaded
+    pub fn has_rom(&self) -> bool {
+        self.rom_addr != 0 && self.rom_size > 0
+    }
+
+    /// Get ROM as a slice
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure rom_addr points to valid memory
+    pub unsafe fn rom_slice(&self) -> Option<&'static [u8]> {
+        if self.has_rom() {
+            Some(core::slice::from_raw_parts(
+                self.rom_addr as *const u8,
+                self.rom_size as usize
+            ))
+        } else {
+            None
+        }
+    }
+
+    /// Get ROM title as string
+    pub unsafe fn rom_title(&self) -> &str {
+        let raw = &*(0x500 as *const RawBootInfo);
+        let title_bytes = &raw.rom_title;
+
+        // Find null terminator
+        let len = title_bytes.iter()
+            .position(|&b| b == 0)
+            .unwrap_or(32);
+
+        core::str::from_utf8_unchecked(&title_bytes[..len])
     }
 }
 
@@ -107,19 +153,14 @@ pub enum E820Type {
 #[derive(Debug, Clone, Copy)]
 #[repr(C, packed)]
 pub struct E820Entry {
-    /// Base address of memory region
     pub base: u64,
-    /// Length of memory region in bytes
     pub length: u64,
-    /// Type of memory region
     pub region_type: u32,
-    /// ACPI 3.0 extended attributes (may be 0)
-    pub acpi_attrs: u32,
+    pub acpi_extended: u32,
 }
 
 impl E820Entry {
-    /// Get the memory type
-    pub fn memory_type(&self) -> E820Type {
+    pub fn entry_type(&self) -> E820Type {
         match self.region_type {
             1 => E820Type::Usable,
             2 => E820Type::Reserved,
@@ -130,38 +171,43 @@ impl E820Entry {
         }
     }
 
-    /// Check if this region is usable RAM
-    pub fn is_usable(&self) -> bool {
-        self.region_type == 1
+    pub fn memory_type(&self) -> E820Type {
+        self.entry_type()
     }
 
-    /// Get end address of this region
+    pub fn start(&self) -> u64 {
+        self.base
+    }
+
     pub fn end(&self) -> u64 {
         self.base + self.length
     }
 }
 
 /// E820 Memory Map
+///
+/// The first 4 bytes at the map address contain the entry count,
+/// followed by the entries.
 pub struct E820Map {
-    entries_ptr: *const E820Entry,
-    count: usize,
+    pub count: u32,
+    pub entries_ptr: *const E820Entry,
 }
 
 impl E820Map {
-    /// Parse E820 map from address
+    /// Create E820Map from address
     ///
     /// # Safety
     ///
-    /// The address must point to a valid E820 map structure
+    /// The address must point to a valid E820 map created by the bootloader
     pub unsafe fn from_addr(addr: u32) -> Self {
-        let count = *(addr as *const u32) as usize;
+        let count = *(addr as *const u32);
         let entries_ptr = (addr + 4) as *const E820Entry;
-        E820Map { entries_ptr, count }
+        Self { count, entries_ptr }
     }
 
     /// Get number of entries
     pub fn len(&self) -> usize {
-        self.count
+        self.count as usize
     }
 
     /// Check if empty
@@ -171,8 +217,10 @@ impl E820Map {
 
     /// Get entry by index
     pub fn get(&self, index: usize) -> Option<E820Entry> {
-        if index < self.count {
-            unsafe { Some(*self.entries_ptr.add(index)) }
+        if index < self.count as usize {
+            unsafe {
+                Some(core::ptr::read_unaligned(self.entries_ptr.add(index)))
+            }
         } else {
             None
         }
@@ -180,7 +228,10 @@ impl E820Map {
 
     /// Iterate over entries
     pub fn iter(&self) -> E820MapIter {
-        E820MapIter { map: self, index: 0 }
+        E820MapIter {
+            map: self,
+            index: 0,
+        }
     }
 }
 
@@ -195,7 +246,9 @@ impl<'a> Iterator for E820MapIter<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let entry = self.map.get(self.index);
-        self.index += 1;
+        if entry.is_some() {
+            self.index += 1;
+        }
         entry
     }
 }

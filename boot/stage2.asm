@@ -7,8 +7,9 @@
 ;   2. Enable A20 line
 ;   3. Set VGA mode 13h (320x200x256) - perfect for 160x144 GB scaled 2x
 ;   4. Load kernel to 0x100000 (1MB)
-;   5. Switch to 32-bit protected mode
-;   6. Jump to kernel
+;   5. Load ROM to 0x300000 (3MB) if present
+;   6. Switch to 32-bit protected mode
+;   7. Jump to kernel
 ;
 ; Assemble: nasm -f bin -o stage2.bin stage2.asm
 ; ============================================================================
@@ -113,9 +114,28 @@ stage2_entry:
     jmp     halt
 
     ; ------------------------------------------------------------------------
-    ; Step 5: Enter Protected Mode
+    ; Step 5: Load ROM (if present)
     ; ------------------------------------------------------------------------
 .step5:
+    mov     si, msg_rom
+    call    print_string
+
+    call    load_rom
+    jc      .no_rom
+
+    mov     si, msg_ok
+    call    print_string
+    jmp     .step6
+
+.no_rom:
+    mov     si, msg_none
+    call    print_string
+    ; ROM is optional, continue anyway
+
+    ; ------------------------------------------------------------------------
+    ; Step 6: Enter Protected Mode
+    ; ------------------------------------------------------------------------
+.step6:
     mov     si, msg_pmode
     call    print_string
 
@@ -259,15 +279,14 @@ verify_a20:
     push    di
     push    si
 
-    ; Test by writing different values to 0000:0500 and FFFF:0510
-    ; If A20 disabled, these wrap to the same address
+    ; Test using 0x600/0x610 to avoid boot_info at 0x500
     xor     ax, ax
     mov     es, ax
-    mov     di, 0x0500
+    mov     di, 0x0600
 
     mov     ax, 0xFFFF
     mov     ds, ax
-    mov     si, 0x0510
+    mov     si, 0x0610
 
     mov     byte [es:di], 0x00
     mov     byte [ds:si], 0xFF
@@ -403,11 +422,168 @@ load_kernel:
     stc
     ret
 
+; ============================================================================
+; Load ROM (if present)
+; ============================================================================
+
+ROM_HEADER_SECTOR equ 289       ; Where ROM header is stored
+ROM_LOAD_SEG      equ 0x3000    ; Temporary load buffer at 0x30000
+ROM_DEST_ADDR     equ 0x300000  ; Final ROM location at 3MB
+
+load_rom:
+    push    es
+    push    bp
+
+    ; Load ROM header sector to temporary buffer
+    mov     ax, ROM_LOAD_SEG
+    mov     es, ax
+    xor     bx, bx
+
+    ; LBA to CHS for sector 289
+    mov     ax, ROM_HEADER_SECTOR
+    xor     dx, dx
+    mov     cx, SECTORS_PER_TRACK
+    div     cx
+    push    dx
+    xor     dx, dx
+    mov     cx, HEADS
+    div     cx
+    mov     ch, al
+    mov     dh, dl
+    pop     ax
+    inc     al
+    mov     cl, al
+
+    ; Read header sector
+    mov     ah, 0x02
+    mov     al, 1
+    mov     dl, [boot_drive]
+    int     0x13
+    jc      .no_rom
+
+    ; Check for 'GBOY' magic at start of header
+    mov     ax, ROM_LOAD_SEG
+    mov     es, ax
+    cmp     dword [es:0], 0x594F4247    ; 'GBOY'
+    jne     .no_rom
+
+    ; Get ROM size from header (offset 4, little-endian)
+    mov     eax, [es:4]
+    mov     [rom_size], eax
+
+    ; Copy title (offset 8, 32 bytes)
+    mov     si, 8
+    mov     di, rom_title
+    mov     cx, 32
+.copy_title:
+    mov     al, [es:si]
+    mov     [di], al
+    inc     si
+    inc     di
+    loop    .copy_title
+
+    ; Calculate sectors needed for ROM
+    mov     eax, [rom_size]
+    add     eax, 511
+    shr     eax, 9              ; Divide by 512
+    mov     [rom_sectors], ax
+
+    ; Load ROM data starting at sector 290
+    mov     word [current_lba], ROM_HEADER_SECTOR + 1
+    mov     word [load_segment], ROM_LOAD_SEG
+    mov     word [load_offset], 0
+    mov     ax, [rom_sectors]
+    mov     [sectors_left], ax
+
+.load_loop:
+    cmp     word [sectors_left], 0
+    je      .load_done
+
+    ; LBA to CHS
+    mov     ax, [current_lba]
+    xor     dx, dx
+    mov     cx, SECTORS_PER_TRACK
+    div     cx
+    push    dx
+    xor     dx, dx
+    mov     cx, HEADS
+    div     cx
+    mov     ch, al
+    mov     dh, dl
+    pop     ax
+    inc     al
+    mov     cl, al
+
+    ; Destination
+    mov     ax, [load_segment]
+    mov     es, ax
+    mov     bx, [load_offset]
+
+    ; Read sector
+    mov     bp, 3
+.rom_retry:
+    push    bx
+    push    cx
+    push    dx
+    push    es
+
+    mov     ah, 0x02
+    mov     al, 1
+    mov     dl, [boot_drive]
+    int     0x13
+
+    pop     es
+    pop     dx
+    pop     cx
+    pop     bx
+
+    jnc     .rom_read_ok
+
+    push    dx
+    xor     ax, ax
+    mov     dl, [boot_drive]
+    int     0x13
+    pop     dx
+    dec     bp
+    jnz     .rom_retry
+    jmp     .no_rom
+
+.rom_read_ok:
+    ; Advance
+    add     word [load_offset], 512
+    jnc     .rom_no_wrap
+    add     word [load_segment], 0x1000
+    mov     word [load_offset], 0
+.rom_no_wrap:
+    inc     word [current_lba]
+    dec     word [sectors_left]
+    jmp     .load_loop
+
+.load_done:
+    ; Mark ROM as loaded
+    mov     dword [rom_addr], ROM_LOAD_SEG * 16  ; Physical address 0x30000
+
+    pop     bp
+    pop     es
+    clc
+    ret
+
+.no_rom:
+    ; No ROM found
+    mov     dword [rom_addr], 0
+    mov     dword [rom_size], 0
+
+    pop     bp
+    pop     es
+    stc                         ; Set carry to indicate no ROM
+    ret
+
 ; Variables
 sectors_left:   dw 0
 current_lba:    dw 0
 load_segment:   dw 0
 load_offset:    dw 0
+rom_sectors:    dw 0
 
 ; ============================================================================
 ; Print String (16-bit, works before mode switch)
@@ -478,12 +654,27 @@ protected_mode_entry:
     cld
     rep movsd
 
+    ; Copy ROM from 0x30000 to 3MB (0x300000) if loaded
+    mov     eax, [rom_addr]
+    test    eax, eax
+    jz      .no_rom_copy
+
+    mov     esi, 0x30000            ; Source: temp buffer
+    mov     edi, ROM_DEST_ADDR      ; Dest: 3MB
+    mov     ecx, [rom_size]
+    add     ecx, 3
+    shr     ecx, 2                  ; Divide by 4 for dword copy
+    rep movsd
+
+    ; Update rom_addr to final location
+    mov     dword [rom_addr], ROM_DEST_ADDR
+
+.no_rom_copy:
     ; Build boot info structure at 0x500
-    ; This matches RetroFutureGB boot_info_t structure
     mov     edi, 0x500
 
-    ; Magic: 'RUST' (0x54535552)
-    mov     dword [edi + 0], 0x54535552
+    ; Magic: 'GBOY' (0x594F4247)
+    mov     dword [edi + 0], 0x594F4247
 
     ; E820 map pointer
     mov     dword [edi + 4], E820_BASE
@@ -505,6 +696,20 @@ protected_mode_entry:
 
     ; Pitch (320)
     mov     dword [edi + 28], 320
+
+    ; ROM address
+    mov     eax, [rom_addr]
+    mov     [edi + 32], eax
+
+    ; ROM size
+    mov     eax, [rom_size]
+    mov     [edi + 36], eax
+
+    ; ROM title (32 bytes at offset 40)
+    mov     esi, rom_title
+    lea     edi, [0x500 + 40]
+    mov     ecx, 8                  ; 32 bytes = 8 dwords
+    rep movsd
 
     ; Quick visual confirmation - draw corner pixels
     mov     byte [0xA0000], 0x0F            ; Top-left white
@@ -530,6 +735,11 @@ fb_height:      dw 0
 fb_bpp:         db 0
 fb_pitch:       dw 0
 
+; ROM info (populated by load_rom)
+rom_addr:       dd 0
+rom_size:       dd 0
+rom_title:      times 32 db 0
+
 ; Messages (short to save space)
 msg_banner:     db 13, 10
                 db '=== RetroFuture GB ===', 13, 10, 0
@@ -537,9 +747,11 @@ msg_e820:       db ' E820..', 0
 msg_a20:        db ' A20..', 0
 msg_vga:        db ' VGA..', 0
 msg_kernel:     db ' Kernel..', 0
+msg_rom:        db ' ROM..', 0
 msg_pmode:      db ' PM', 0
 msg_ok:         db 'ok', 13, 10, 0
 msg_fail:       db 'FAIL', 13, 10, 0
+msg_none:       db 'none', 13, 10, 0
 
 ; ============================================================================
 ; Pad to exactly 16KB (32 sectors)

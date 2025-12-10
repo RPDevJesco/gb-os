@@ -2,15 +2,11 @@
 //!
 //! Handles PS/2 keyboard input with a buffer for polling from main loop.
 //! The IRQ handler fills the buffer, main loop drains it.
+//!
+//! FIXED: Now properly buffers both key press AND release events,
+//! which is required for Game Boy emulator input handling.
 
 use crate::arch::x86::io::inb;
-
-/// Key event types
-#[derive(Debug, Clone, Copy)]
-pub enum KeyEvent {
-    Press(KeyCode),
-    Release(KeyCode),
-}
 
 /// Key codes
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,49 +37,103 @@ pub enum KeyCode {
     CapsLock = 0x3A,
     F1 = 0x3B, F2 = 0x3C, F3 = 0x3D, F4 = 0x3E, F5 = 0x3F,
     F6 = 0x40, F7 = 0x41, F8 = 0x42, F9 = 0x43, F10 = 0x44,
-    // Extended keys (0xE0 prefix)
-    Up = 0x48,
-    Left = 0x4B,
-    Right = 0x4D,
-    Down = 0x50,
+    NumLock = 0x45,
+    ScrollLock = 0x46,
+    Keypad7 = 0x47,
+    Keypad8 = 0x48,
+    Keypad9 = 0x49,
+    KeypadMinus = 0x4A,
+    Keypad4 = 0x4B,
+    Keypad5 = 0x4C,
+    Keypad6 = 0x4D,
+    KeypadPlus = 0x4E,
+    Keypad1 = 0x4F,
+    Keypad2 = 0x50,
+    Keypad3 = 0x51,
+    Keypad0 = 0x52,
+    KeypadDot = 0x53,
+    F11 = 0x57,
+    F12 = 0x58,
+    // Extended keys (after E0 prefix)
+    Up = 0x80,      // E0 48
+    Left = 0x81,    // E0 4B
+    Right = 0x82,   // E0 4D
+    Down = 0x83,    // E0 50
+    Insert = 0x84,  // E0 52
+    Delete = 0x85,  // E0 53
+    Home = 0x86,    // E0 47
+    End = 0x87,     // E0 4F
+    PageUp = 0x88,  // E0 49
+    PageDown = 0x89,// E0 51
+    RightCtrl = 0x8A,  // E0 1D
+    RightAlt = 0x8B,   // E0 38
     Unknown = 0xFF,
 }
 
 impl KeyCode {
-    pub fn from_scancode(scancode: u8) -> Self {
-        match scancode & 0x7F {
-            0x01 => Self::Escape,
-            0x02 => Self::Key1, 0x03 => Self::Key2, 0x04 => Self::Key3,
-            0x05 => Self::Key4, 0x06 => Self::Key5, 0x07 => Self::Key6,
-            0x08 => Self::Key7, 0x09 => Self::Key8, 0x0A => Self::Key9,
-            0x0B => Self::Key0, 0x0C => Self::Minus, 0x0D => Self::Equals,
-            0x0E => Self::Backspace, 0x0F => Self::Tab,
-            0x10 => Self::Q, 0x11 => Self::W, 0x12 => Self::E,
-            0x13 => Self::R, 0x14 => Self::T, 0x15 => Self::Y,
-            0x16 => Self::U, 0x17 => Self::I, 0x18 => Self::O,
-            0x19 => Self::P, 0x1A => Self::LeftBracket, 0x1B => Self::RightBracket,
-            0x1C => Self::Enter, 0x1D => Self::LeftCtrl,
-            0x1E => Self::A, 0x1F => Self::S, 0x20 => Self::D,
-            0x21 => Self::F, 0x22 => Self::G, 0x23 => Self::H,
-            0x24 => Self::J, 0x25 => Self::K, 0x26 => Self::L,
-            0x27 => Self::Semicolon, 0x28 => Self::Quote, 0x29 => Self::Backtick,
-            0x2A => Self::LeftShift, 0x2B => Self::Backslash,
-            0x2C => Self::Z, 0x2D => Self::X, 0x2E => Self::C,
-            0x2F => Self::V, 0x30 => Self::B, 0x31 => Self::N,
-            0x32 => Self::M, 0x33 => Self::Comma, 0x34 => Self::Period,
-            0x35 => Self::Slash, 0x36 => Self::RightShift,
-            0x37 => Self::KeypadAsterisk, 0x38 => Self::LeftAlt,
-            0x39 => Self::Space, 0x3A => Self::CapsLock,
-            0x3B => Self::F1, 0x3C => Self::F2, 0x3D => Self::F3,
-            0x3E => Self::F4, 0x3F => Self::F5, 0x40 => Self::F6,
-            0x41 => Self::F7, 0x42 => Self::F8, 0x43 => Self::F9,
-            0x44 => Self::F10,
-            0x48 => Self::Up, 0x4B => Self::Left,
-            0x4D => Self::Right, 0x50 => Self::Down,
-            _ => Self::Unknown,
+    /// Convert scancode to KeyCode (handles extended scancodes)
+    pub fn from_scancode(scancode: u8, extended: bool) -> Self {
+        let code = scancode & 0x7F;  // Strip release bit
+
+        if extended {
+            // Extended scancodes (E0 prefix)
+            match code {
+                0x48 => Self::Up,
+                0x4B => Self::Left,
+                0x4D => Self::Right,
+                0x50 => Self::Down,
+                0x52 => Self::Insert,
+                0x53 => Self::Delete,
+                0x47 => Self::Home,
+                0x4F => Self::End,
+                0x49 => Self::PageUp,
+                0x51 => Self::PageDown,
+                0x1D => Self::RightCtrl,
+                0x38 => Self::RightAlt,
+                _ => Self::Unknown,
+            }
+        } else {
+            // Standard scancodes
+            match code {
+                0x01 => Self::Escape,
+                0x02 => Self::Key1, 0x03 => Self::Key2, 0x04 => Self::Key3,
+                0x05 => Self::Key4, 0x06 => Self::Key5, 0x07 => Self::Key6,
+                0x08 => Self::Key7, 0x09 => Self::Key8, 0x0A => Self::Key9,
+                0x0B => Self::Key0, 0x0C => Self::Minus, 0x0D => Self::Equals,
+                0x0E => Self::Backspace, 0x0F => Self::Tab,
+                0x10 => Self::Q, 0x11 => Self::W, 0x12 => Self::E,
+                0x13 => Self::R, 0x14 => Self::T, 0x15 => Self::Y,
+                0x16 => Self::U, 0x17 => Self::I, 0x18 => Self::O,
+                0x19 => Self::P, 0x1A => Self::LeftBracket, 0x1B => Self::RightBracket,
+                0x1C => Self::Enter, 0x1D => Self::LeftCtrl,
+                0x1E => Self::A, 0x1F => Self::S, 0x20 => Self::D,
+                0x21 => Self::F, 0x22 => Self::G, 0x23 => Self::H,
+                0x24 => Self::J, 0x25 => Self::K, 0x26 => Self::L,
+                0x27 => Self::Semicolon, 0x28 => Self::Quote, 0x29 => Self::Backtick,
+                0x2A => Self::LeftShift, 0x2B => Self::Backslash,
+                0x2C => Self::Z, 0x2D => Self::X, 0x2E => Self::C,
+                0x2F => Self::V, 0x30 => Self::B, 0x31 => Self::N,
+                0x32 => Self::M, 0x33 => Self::Comma, 0x34 => Self::Period,
+                0x35 => Self::Slash, 0x36 => Self::RightShift,
+                0x37 => Self::KeypadAsterisk, 0x38 => Self::LeftAlt,
+                0x39 => Self::Space, 0x3A => Self::CapsLock,
+                0x3B => Self::F1, 0x3C => Self::F2, 0x3D => Self::F3,
+                0x3E => Self::F4, 0x3F => Self::F5, 0x40 => Self::F6,
+                0x41 => Self::F7, 0x42 => Self::F8, 0x43 => Self::F9,
+                0x44 => Self::F10, 0x45 => Self::NumLock, 0x46 => Self::ScrollLock,
+                0x47 => Self::Keypad7, 0x48 => Self::Keypad8, 0x49 => Self::Keypad9,
+                0x4A => Self::KeypadMinus, 0x4B => Self::Keypad4,
+                0x4C => Self::Keypad5, 0x4D => Self::Keypad6,
+                0x4E => Self::KeypadPlus, 0x4F => Self::Keypad1,
+                0x50 => Self::Keypad2, 0x51 => Self::Keypad3,
+                0x52 => Self::Keypad0, 0x53 => Self::KeypadDot,
+                0x57 => Self::F11, 0x58 => Self::F12,
+                _ => Self::Unknown,
+            }
         }
     }
 
+    /// Convert to ASCII character (if applicable)
     pub fn to_ascii(self, shift: bool) -> Option<char> {
         let c = match self {
             Self::Key1 => if shift { '!' } else { '1' },
@@ -134,6 +184,8 @@ impl KeyCode {
             Self::Period => if shift { '>' } else { '.' },
             Self::Slash => if shift { '?' } else { '/' },
             Self::Space => ' ',
+            Self::Tab => '\t',
+            Self::Enter => '\n',
             _ => return None,
         };
         Some(c)
@@ -144,14 +196,21 @@ impl KeyCode {
 // Key Buffer - filled by IRQ, drained by main loop
 // =============================================================================
 
-const KEY_BUFFER_SIZE: usize = 16;
+const KEY_BUFFER_SIZE: usize = 32;
 
-/// Buffered key press with ASCII translation
+/// Buffered key event with press/release state
 #[derive(Clone, Copy)]
 pub struct BufferedKey {
     pub keycode: KeyCode,
     pub ascii: Option<char>,
-    pub pressed: bool,
+    pub pressed: bool,  // true = pressed, false = released
+}
+
+/// Key event types (for compatibility)
+#[derive(Debug, Clone, Copy)]
+pub enum KeyEvent {
+    Press(KeyCode),
+    Release(KeyCode),
 }
 
 /// Keyboard state with event buffer
@@ -182,6 +241,7 @@ impl Keyboard {
     }
 
     /// Process scancode (called from IRQ handler)
+    /// Now properly buffers BOTH press and release events
     pub fn process_scancode(&mut self, scancode: u8) -> Option<KeyEvent> {
         // Handle E0 prefix for extended keys
         if scancode == 0xE0 {
@@ -189,18 +249,31 @@ impl Keyboard {
             return None;
         }
 
+        // Handle E1 prefix (Pause key) - just ignore
+        if scancode == 0xE1 {
+            return None;
+        }
+
         let released = scancode & 0x80 != 0;
-        let keycode = KeyCode::from_scancode(scancode);
+        let keycode = KeyCode::from_scancode(scancode, self.extended);
+
+        // Clear extended flag after use
+        self.extended = false;
+
+        // Ignore unknown keys
+        if keycode == KeyCode::Unknown {
+            return None;
+        }
 
         // Update modifier state
         match keycode {
             KeyCode::LeftShift | KeyCode::RightShift => {
                 self.shift_pressed = !released;
             }
-            KeyCode::LeftCtrl => {
+            KeyCode::LeftCtrl | KeyCode::RightCtrl => {
                 self.ctrl_pressed = !released;
             }
-            KeyCode::LeftAlt => {
+            KeyCode::LeftAlt | KeyCode::RightAlt => {
                 self.alt_pressed = !released;
             }
             KeyCode::CapsLock if !released => {
@@ -209,22 +282,28 @@ impl Keyboard {
             _ => {}
         }
 
-        self.extended = false;
+        // Calculate ASCII for this key
+        let shift = self.shift_pressed ^ self.caps_lock;
+        let ascii = if !released {
+            keycode.to_ascii(shift)
+        } else {
+            None
+        };
 
-        // Buffer the key event for main loop
-        if !released {
-            let shift = self.shift_pressed ^ self.caps_lock;
-            let ascii = keycode.to_ascii(shift);
+        // Buffer BOTH press and release events
+        let key = BufferedKey {
+            keycode,
+            ascii,
+            pressed: !released,
+        };
 
-            let key = BufferedKey {
-                keycode,
-                ascii,
-                pressed: true,
-            };
+        // Add to ring buffer (overwrite if full)
+        self.buffer[self.write_idx] = Some(key);
+        self.write_idx = (self.write_idx + 1) % KEY_BUFFER_SIZE;
 
-            // Add to ring buffer
-            self.buffer[self.write_idx] = Some(key);
-            self.write_idx = (self.write_idx + 1) % KEY_BUFFER_SIZE;
+        // If buffer is full, advance read pointer too (lose oldest event)
+        if self.write_idx == self.read_idx {
+            self.read_idx = (self.read_idx + 1) % KEY_BUFFER_SIZE;
         }
 
         if released {
@@ -254,6 +333,16 @@ impl Keyboard {
     /// Check if shift is pressed
     pub fn shift(&self) -> bool {
         self.shift_pressed
+    }
+
+    /// Check if ctrl is pressed
+    pub fn ctrl(&self) -> bool {
+        self.ctrl_pressed
+    }
+
+    /// Check if alt is pressed
+    pub fn alt(&self) -> bool {
+        self.alt_pressed
     }
 }
 
