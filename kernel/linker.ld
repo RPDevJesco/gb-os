@@ -11,7 +11,7 @@ SECTIONS
     .text : ALIGN(4K)
     {
         /* CRITICAL: _start must be at the very beginning! */
-        *(.text.boot)
+        *(.text.boot)       /* Match main.rs global_asm section */
         *(.text .text.*)
     }
 
