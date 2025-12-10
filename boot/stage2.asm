@@ -711,9 +711,7 @@ do_load_kernel:
     jmp     .load_loop
 
 .copy_to_high:
-%ifndef GAMEBOY_MODE
     call    enable_unreal_mode
-%endif
     push    ds
     xor     ax, ax
     mov     ds, ax

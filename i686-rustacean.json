@@ -15,8 +15,7 @@
     "relocation-model": "static",
     "pre-link-args": {
         "gnu-lld": [
-            "-Tlinker.ld",
-            "--gc-sections"
+            "-Tlinker.ld"
         ]
     }
 }
