@@ -1,0 +1,32 @@
+[package]
+name = "rustacean-kernel"
+version = "0.1.0"
+edition = "2021"
+authors = ["Rustacean OS Contributors"]
+description = "Rustacean OS Kernel - Plan 9 style GUI OS with EventChains"
+
+# Build as a binary (kernel executable)
+[[bin]]
+name = "rustacean-kernel"
+path = "src/main.rs"
+
+[dependencies]
+# No external dependencies - everything is no_std from scratch
+# We'll implement our own EventChains, intrusive lists, etc.
+
+[profile.dev]
+panic = "abort"
+opt-level = 1
+
+[profile.release]
+panic = "abort"
+opt-level = 2
+lto = true
+codegen-units = 1
+
+[features]
+default = []
+# Feature flags for conditional compilation
+vga_text = []      # VGA text mode support
+vesa = []          # VESA graphics support
+debug = []         # Extra debug output

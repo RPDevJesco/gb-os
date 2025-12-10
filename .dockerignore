@@ -1,0 +1,38 @@
+# Rustacean OS Docker Ignore
+
+# Output directories
+output/
+build/
+
+# Rust build artifacts
+kernel/target/
+tools/mkgamedisk/target/
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Docker files
+docker-compose.yml
+
+# Archives
+*.tar.gz
+*.zip
+
+# ROM files (don't include in build context)
+*.gb
+*.gbc
+
+# Test output
+*.img
