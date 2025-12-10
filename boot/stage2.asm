@@ -620,28 +620,6 @@ lba_to_chs_rom:
     pop     bx
     ret
 
-; ============================================================================
-; Enable Unreal Mode
-; ============================================================================
-
-enable_unreal_mode:
-    push    ds
-    push    es
-    cli
-    lgdt    [gdt_descriptor]
-    mov     eax, cr0
-    or      al, 1
-    mov     cr0, eax
-    mov     bx, 0x10
-    mov     ds, bx
-    mov     es, bx
-    and     al, 0xFE
-    mov     cr0, eax
-    pop     es
-    pop     ds
-    sti
-    ret
-
 %endif  ; GAMEBOY_MODE
 
 ; ============================================================================
@@ -732,7 +710,6 @@ do_load_kernel:
     clc
     ret
 
-%ifndef GAMEBOY_MODE
 enable_unreal_mode:
     push    ds
     push    es
@@ -750,7 +727,6 @@ enable_unreal_mode:
     pop     ds
     sti
     ret
-%endif
 
 ; ============================================================================
 ; Build Boot Info Structure
