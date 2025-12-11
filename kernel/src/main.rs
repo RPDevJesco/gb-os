@@ -290,8 +290,8 @@ fn blit_gb_to_vga(gb_data: &[u8]) {
 fn run_gameboy_emulator() -> ! {
     use alloc::vec::Vec;
 
-    // For now, use embedded test ROM or load from boot_info
-    // TODO: Get ROM from boot_info.rom_addr / boot_info.rom_size
+    // Initialize PIT for accurate timing (1000 Hz = 1ms per tick)
+    arch::x86::pit::set_frequency(1000);
 
     // Check if ROM was loaded by bootloader
     let boot_info = unsafe { BootInfo::from_ptr(0x500 as *const u8) };
@@ -323,6 +323,11 @@ fn run_gameboy_emulator() -> ! {
     // Create input handler
     let mut input_state = gameboy::input::InputState::new();
 
+    // Frame timing: 59.7 fps = ~16.75ms per frame
+    // At 1000 Hz, that's ~17 ticks per frame
+    const TICKS_PER_FRAME: u32 = 17;
+    let mut last_frame_ticks = arch::x86::pit::ticks();
+
     // Main emulation loop
     const CYCLES_PER_FRAME: u32 = 70224;  // ~59.7 FPS
 
@@ -350,8 +355,13 @@ fn run_gameboy_emulator() -> ! {
             }
         }
 
-        // Wait for next frame (HLT until timer interrupt)
-        unsafe { core::arch::asm!("hlt"); }
+        // Frame timing - wait until next frame time
+        let target_ticks = last_frame_ticks.wrapping_add(TICKS_PER_FRAME);
+        while arch::x86::pit::ticks().wrapping_sub(target_ticks) > 0x8000_0000 {
+            // Use HLT for power efficiency while waiting
+            unsafe { core::arch::asm!("hlt"); }
+        }
+        last_frame_ticks = target_ticks;
     }
 }
 

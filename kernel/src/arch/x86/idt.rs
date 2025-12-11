@@ -525,18 +525,16 @@ fn page_fault_handler(frame: &InterruptFrame) {
 }
 
 fn timer_handler() {
-    // Increment local tick counter
-    // If you have a PIT module, replace this with: crate::arch::x86::pit::tick();
-    unsafe {
-        TICK_COUNT = TICK_COUNT.wrapping_add(1);
-    }
+    // Update PIT tick counter
+    crate::arch::x86::pit::tick();
 
+    // Send End of Interrupt
     pic::send_eoi(32);
 }
 
-/// Get current tick count
+/// Get current tick count (for compatibility)
 pub fn ticks() -> u32 {
-    unsafe { TICK_COUNT }
+    crate::arch::x86::pit::ticks()
 }
 
 fn keyboard_handler() {
