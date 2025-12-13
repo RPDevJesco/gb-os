@@ -11,13 +11,23 @@
 ; Boot Info Protocol:
 ;   On entry, check for boot info at 0x500:
 ;     - If magic 'VBRP' present: booting from partition (use partition-relative LBA)
+;     - If magic 'CDRM' present: booting from CD (use CD sector addressing)
 ;     - Otherwise: booting from raw media (use absolute LBA)
+;
+; HIGH MEMORY COPY STRATEGY:
+;   Instead of using fragile "unreal mode", we use a robust approach:
+;   1. BIOS reads data to low memory buffer (< 1MB)
+;   2. Enter protected mode with flat 4GB segments
+;   3. Copy data from low buffer to high memory destination
+;   4. Return to real mode for next BIOS read
+;   This is more reliable because protected mode segment descriptors are
+;   well-defined and not subject to BIOS clobbering.
 ;
 ; Steps:
 ;   1. Query E820 memory map
 ;   2. Enable A20 line
 ;   3. Set VGA mode 13h (320x200x256)
-;   4. Load kernel to 0x100000 (1MB) using unreal mode
+;   4. Load kernel to 0x100000 (1MB) using protected-mode copy
 ;   5. Load ROM to 0x300000 (3MB) if present
 ;   6. Switch to 32-bit protected mode
 ;   7. Jump to kernel
@@ -44,7 +54,6 @@ E820_MAP_ADDR       equ 0x1000
 
 ; Kernel location
 KERNEL_LOAD_SEG     equ 0x2000      ; Temporary load at 0x20000
-KERNEL_LOAD_OFF     equ 0x0000
 KERNEL_DEST_ADDR    equ 0x100000    ; Final location at 1MB
 KERNEL_START_SECTOR equ 65          ; Relative sector for kernel (after stage2)
 KERNEL_SECTORS      equ 256         ; 128KB max kernel
@@ -54,6 +63,9 @@ ROM_LOAD_SEG        equ 0x3000      ; Temporary at 0x30000
 ROM_DEST_ADDR       equ 0x300000    ; Final at 3MB
 ROM_HEADER_SECTOR   equ 321         ; After kernel (65 + 256)
 ROM_MAX_SECTORS     equ 4096        ; 2MB max ROM
+
+; CD temp buffer
+CD_TEMP_SEG         equ 0x1000      ; Temp buffer for CD sector reads
 
 ; ============================================================================
 ; Entry Point
@@ -163,26 +175,34 @@ stage2_entry:
     call    print_string
 
     ; ------------------------------------------------------------------------
-    ; Step 4: Enter Unreal Mode for >1MB access
+    ; Step 4: Test Protected Mode Copy
     ; ------------------------------------------------------------------------
-    mov     si, msg_unreal
+    mov     si, msg_pmtest
     call    print_string
 
-    call    enter_unreal_mode
+    ; Test: write a known value to 1MB using protected mode, read it back
+    mov     dword [pm_test_value], 0x12345678
+    mov     esi, pm_test_value          ; Source in low memory
+    mov     edi, 0x100000               ; Destination at 1MB
+    mov     ecx, 1                      ; 1 dword
+    call    pm_copy
 
-    ; Test unreal mode: write to 1MB using FS, read back, verify
-    mov     edi, 0x100000       ; 1MB
-    mov     eax, 0x12345678
-    a32 mov [fs:edi], eax       ; Write to 1MB using FS
-    a32 mov eax, [fs:edi]       ; Read back using FS
+    ; Read back and verify
+    mov     esi, 0x100000               ; Source at 1MB
+    mov     edi, pm_test_result         ; Destination in low memory
+    mov     ecx, 1                      ; 1 dword
+    call    pm_copy
+
+    ; Compare
+    mov     eax, [pm_test_result]
     cmp     eax, 0x12345678
-    jne     .unreal_fail
+    jne     .pm_fail
 
     mov     si, msg_ok
     call    print_string
     jmp     .step5
 
-.unreal_fail:
+.pm_fail:
     ; Print what we got back for debugging
     call    print_hex_dword
     mov     si, msg_fail
@@ -221,19 +241,24 @@ stage2_entry:
     mov     si, msg_ok
     call    print_string
 
-    ; DEBUG: Print first 8 bytes of ROM at 0x300000 using unreal mode
-    ; Use FS for high memory access (FS has 4GB limit)
+    ; DEBUG: Print first 8 bytes of ROM at 0x300000
     mov     si, msg_romdbg
     call    print_string
 
-    mov     ebx, ROM_DEST_ADDR      ; 0x300000
+    ; Read 8 bytes from 0x300000 to low memory buffer, then print
+    mov     esi, ROM_DEST_ADDR          ; Source at 3MB
+    mov     edi, rom_debug_buf          ; Destination in low memory
+    mov     ecx, 2                      ; 2 dwords = 8 bytes
+    call    pm_copy
+
+    ; Print the bytes
+    mov     si, rom_debug_buf
     mov     cx, 8
 .dbg_loop:
-    a32 mov al, [fs:ebx]            ; Read byte from 0x300000+ using FS
+    lodsb
     call    print_hex_byte
     mov     al, ' '
     call    print_char
-    inc     ebx
     loop    .dbg_loop
 
     mov     si, msg_crlf
@@ -439,7 +464,7 @@ read_sectors_lba:
     mov     ax, [cd_dest_seg]           ; dest segment
     mov     bx, ax                      ; save dest segment in BX
 
-    ; Set up segments for copy - this WILL destroy unreal mode DS limit
+    ; Set up segments for copy
     push    ds
     push    es
 
@@ -455,13 +480,10 @@ read_sectors_lba:
     pop     es
     pop     ds
 
-    ; DS is now restored to 0 (from push/pop)
-    ; FS still has 4GB limit for high memory access
-
     ; Update destination offset (DI was advanced by rep movsb amount)
     mov     [cd_dest_off], di
 
-    ; Update bytes remaining (ECX is now 0, use original count)
+    ; Update bytes remaining
     mov     eax, 2048
     sub     eax, [cd_start_offset]
     cmp     eax, [cd_bytes_need]
@@ -475,11 +497,6 @@ read_sectors_lba:
     inc     dword [cd_read_sector]
 
     jmp     .cd_read_loop
-
-.restore_unreal:
-    ; Quick unreal mode restore - restores FS for copy_high
-    call    restore_unreal_fs
-    ret
 
 .success:
     clc
@@ -498,7 +515,6 @@ read_sectors_lba:
     ret
 
 ; CD read temporary variables
-CD_TEMP_SEG         equ 0x1000      ; Temp buffer for CD sector reads
 cd_dest_seg:        dw 0
 cd_dest_off:        dw 0
 cd_sectors_want:    dw 0
@@ -509,11 +525,35 @@ cd_bytes_need:      dd 0
 cd_sectors_read:    dd 0
 
 ; ============================================================================
-; enter_unreal_mode - Enable 32-bit addressing in real mode
-; Uses FS for 4GB access (DS/ES may be reloaded by other code)
+; pm_copy - Copy data using protected mode (robust high memory access)
+; Input:
+;   ESI = source address (physical)
+;   EDI = destination address (physical)
+;   ECX = dword count
+;
+; This function:
+;   1. Saves real mode state
+;   2. Enters protected mode with flat 4GB segments
+;   3. Copies data
+;   4. Returns to real mode
+;
+; This is more reliable than "unreal mode" because:
+;   - Protected mode segment descriptors are well-defined
+;   - No reliance on hidden descriptor cache behavior
+;   - Works consistently across all x86 CPUs and BIOSes
 ; ============================================================================
 
-enter_unreal_mode:
+pm_copy:
+    pushad
+    push    ds
+    push    es
+
+    ; Save parameters to memory (we'll need them in protected mode)
+    mov     [pm_src], esi
+    mov     [pm_dst], edi
+    mov     [pm_cnt], ecx
+
+    ; Disable interrupts
     cli
 
     ; Load GDT
@@ -524,28 +564,81 @@ enter_unreal_mode:
     or      al, 1
     mov     cr0, eax
 
-    ; Load FS and GS with 4GB limit (selector 0x10)
-    ; These segments are rarely touched by other code
+    ; Far jump to flush prefetch queue and load CS with code selector
+    jmp     0x08:.pm_code
+
+[BITS 32]
+.pm_code:
+    ; Now in 32-bit protected mode
+    ; Load data segments with flat 4GB selector
     mov     ax, 0x10
-    mov     fs, ax
-    mov     gs, ax
-    ; Also load DS/ES for compatibility
     mov     ds, ax
     mov     es, ax
+    mov     fs, ax
+    mov     gs, ax
+    mov     ss, ax
+
+    ; Get parameters
+    mov     esi, [pm_src]
+    mov     edi, [pm_dst]
+    mov     ecx, [pm_cnt]
+
+    ; Copy dwords
+    cld
+    rep movsd
 
     ; Return to real mode
+    ; First, load 16-bit data segment (selector 0x18)
+    mov     ax, 0x18
+    mov     ds, ax
+    mov     es, ax
+    mov     fs, ax
+    mov     gs, ax
+    mov     ss, ax
+
+    ; Far jump to 16-bit code segment (selector 0x20)
+    jmp     0x20:.pm_real
+
+[BITS 16]
+.pm_real:
+    ; Now in 16-bit protected mode
+    ; Clear PE bit to return to real mode
     mov     eax, cr0
     and     al, 0xFE
     mov     cr0, eax
 
-    ; Restore DS/ES to 0 for normal code
-    ; FS/GS retain 4GB limit since we don't touch them
+    ; Far jump to flush prefetch queue
+    jmp     0x0000:.real_mode
+
+.real_mode:
+    ; Restore real mode segments
     xor     ax, ax
     mov     ds, ax
     mov     es, ax
+    mov     fs, ax
+    mov     gs, ax
+    mov     ss, ax
+    mov     sp, 0x7E00          ; Restore stack
 
+    ; Re-enable interrupts
     sti
+
+    pop     es
+    pop     ds
+    popad
     ret
+
+; pm_copy parameters (in low memory)
+pm_src:     dd 0
+pm_dst:     dd 0
+pm_cnt:     dd 0
+
+; Test values
+pm_test_value:  dd 0
+pm_test_result: dd 0
+
+; ROM debug buffer
+rom_debug_buf:  times 8 db 0
 
 ; ============================================================================
 ; load_kernel - Load kernel using LBA and copy to high memory
@@ -583,15 +676,12 @@ load_kernel:
     call    read_sectors_lba
     jc      .error
 
-    ; Restore FS 4GB limit - BIOS int 13h may have clobbered it
-    call    restore_unreal_fs
-
-    ; Copy from temp buffer to high memory using unreal mode
+    ; Copy from temp buffer to high memory using protected mode
     mov     esi, KERNEL_LOAD_SEG * 16   ; Source: 0x20000
     mov     edi, [load_dest]             ; Dest: 1MB+
     movzx   ecx, word [read_count]
     shl     ecx, 7                       ; sectors * 128 = dwords
-    call    copy_high
+    call    pm_copy
 
     ; Update counters
     movzx   eax, word [read_count]
@@ -619,67 +709,6 @@ load_kernel:
     pop     eax
     pop     es
     stc
-    ret
-
-; ============================================================================
-; copy_high - Copy data to address above 1MB using unreal mode
-; Input: ESI = source (physical), EDI = dest (physical), ECX = dword count
-; Uses FS segment which has 4GB limit
-; ============================================================================
-
-copy_high:
-    push    eax
-    push    ecx
-    push    esi
-    push    edi
-
-.loop:
-    test    ecx, ecx
-    jz      .done
-
-    ; Use FS for 32-bit addressing (FS has 4GB limit from unreal mode)
-    a32 mov eax, [fs:esi]
-    a32 mov [fs:edi], eax
-    add     esi, 4
-    add     edi, 4
-    dec     ecx
-    jmp     .loop
-
-.done:
-    pop     edi
-    pop     esi
-    pop     ecx
-    pop     eax
-    ret
-
-; ============================================================================
-; restore_unreal_fs - Restore FS segment with 4GB limit after BIOS interrupts
-; BIOS int 13h can clobber segment registers, breaking unreal mode.
-; This function re-establishes FS with a 4GB limit for copy_high to work.
-; ============================================================================
-
-restore_unreal_fs:
-    push    eax
-
-    cli
-
-    ; Enter protected mode briefly
-    mov     eax, cr0
-    or      al, 1
-    mov     cr0, eax
-
-    ; Load FS with 4GB data segment selector
-    mov     ax, 0x10
-    mov     fs, ax
-
-    ; Return to real mode - FS retains 4GB limit in hidden descriptor cache
-    mov     eax, cr0
-    and     al, 0xFE
-    mov     cr0, eax
-
-    sti
-
-    pop     eax
     ret
 
 ; ============================================================================
@@ -761,31 +790,12 @@ load_rom:
     call    read_sectors_lba
     jc      .error
 
-    ; DEBUG: Print first 2 bytes from temp buffer before copy_high
-    ; Read values from temp buffer using ES
-    mov     al, [es:0]          ; First byte at ROM_LOAD_SEG:0
-    mov     ah, [es:1]          ; Second byte
-    push    ax                  ; Save both bytes
-
-    ; Print them (DS is still 0, so print functions work)
-    pop     ax
-    push    ax
-    call    print_hex_byte      ; Print first byte (in AL)
-    pop     ax
-    mov     al, ah
-    call    print_hex_byte      ; Print second byte
-    mov     al, ' '
-    call    print_char
-
-    ; Restore FS 4GB limit - BIOS int 13h may have clobbered it
-    call    restore_unreal_fs
-
-    ; Copy to high memory
+    ; Copy to high memory using protected mode
     mov     esi, ROM_LOAD_SEG * 16
     mov     edi, [load_dest]
     movzx   ecx, word [read_count]
-    shl     ecx, 7
-    call    copy_high
+    shl     ecx, 7                      ; sectors * 128 = dwords
+    call    pm_copy
 
     movzx   eax, word [read_count]
     add     [current_sector], eax
@@ -852,28 +862,33 @@ query_e820:
     jmp     .loop
 
 .done:
+    ; Store count at start of map
     mov     eax, [e820_count]
     mov     [E820_MAP_ADDR], eax
-    clc
-    jmp     .exit
 
-.error:
-    stc
-
-.exit:
     pop     edx
     pop     ecx
     pop     ebx
     pop     di
     pop     es
+    clc
+    ret
+
+.error:
+    pop     edx
+    pop     ecx
+    pop     ebx
+    pop     di
+    pop     es
+    stc
     ret
 
 ; ============================================================================
-; Enable A20 Line
+; A20 Line Functions
 ; ============================================================================
 
 enable_a20:
-    ; Try BIOS method
+    ; Try BIOS method first
     mov     ax, 0x2401
     int     0x15
     jnc     .done
@@ -885,7 +900,7 @@ enable_a20:
     call    .wait_kbd
     mov     al, 0xD0
     out     0x64, al
-    call    .wait_kbd2
+    call    .wait_kbd_data
     in      al, 0x60
     push    ax
     call    .wait_kbd
@@ -909,44 +924,39 @@ enable_a20:
     jnz     .wait_kbd
     ret
 
-.wait_kbd2:
+.wait_kbd_data:
     in      al, 0x64
     test    al, 1
-    jz      .wait_kbd2
+    jz      .wait_kbd_data
     ret
-
-; ============================================================================
-; Verify A20 Line
-; ============================================================================
 
 verify_a20:
     push    es
     push    di
     push    si
 
-    ; Test using 0x600/0x610 to avoid boot_info at 0x500
+    ; Write to 0000:0500
     xor     ax, ax
     mov     es, ax
-    mov     di, 0x0600
-
-    mov     ax, 0xFFFF
-    mov     ds, ax
-    mov     si, 0x0610
-
+    mov     di, 0x0500
     mov     byte [es:di], 0x00
-    mov     byte [ds:si], 0xFF
 
-    cmp     byte [es:di], 0xFF
-    je      .a20_disabled
+    ; Write to FFFF:0510 (wraps to 0000:0500 if A20 disabled)
+    mov     ax, 0xFFFF
+    mov     es, ax
+    mov     si, 0x0510
+    mov     byte [es:si], 0xFF
 
+    ; Check if 0000:0500 changed
     xor     ax, ax
-    mov     ds, ax
+    mov     es, ax
+    cmp     byte [es:di], 0xFF
+    je      .disabled
+
     clc
     jmp     .done
 
-.a20_disabled:
-    xor     ax, ax
-    mov     ds, ax
+.disabled:
     stc
 
 .done:
@@ -956,7 +966,7 @@ verify_a20:
     ret
 
 ; ============================================================================
-; Build Boot Info Structure
+; build_boot_info - Create boot info structure for kernel
 ; ============================================================================
 
 build_boot_info:
@@ -1169,7 +1179,7 @@ msg_banner:     db 'RetroFutureGB Stage2', 13, 10, 0
 msg_e820:       db '  E820 memory map... ', 0
 msg_a20:        db '  A20 gate... ', 0
 msg_vga:        db '  VGA mode 13h... ', 0
-msg_unreal:     db '  Unreal mode... ', 0
+msg_pmtest:     db '  PM copy test... ', 0
 msg_kernel:     db '  Loading kernel', 0
 msg_rom:        db 13, 10, '  Loading ROM', 0
 msg_boot:       db 13, 10, '  Starting kernel...', 13, 10, 0
@@ -1181,28 +1191,46 @@ msg_romdbg:     db '  ROM@3M: ', 0
 msg_crlf:       db 13, 10, 0
 
 ; ============================================================================
-; GDT
+; GDT - Global Descriptor Table
 ; ============================================================================
 
 align 16
 gdt_start:
-    dq 0                            ; Null descriptor
+    ; Null descriptor (0x00)
+    dq 0
 
-    ; Code segment 0x08
-    dw 0xFFFF
-    dw 0
-    db 0
-    db 10011010b
-    db 11001111b
-    db 0
+    ; 32-bit Code segment (0x08) - flat 4GB
+    dw 0xFFFF                   ; Limit low
+    dw 0                        ; Base low
+    db 0                        ; Base middle
+    db 10011010b                ; Access: present, ring 0, code, readable
+    db 11001111b                ; Flags: 4KB granularity, 32-bit, limit high
+    db 0                        ; Base high
 
-    ; Data segment 0x10
-    dw 0xFFFF
-    dw 0
-    db 0
-    db 10010010b
-    db 11001111b
-    db 0
+    ; 32-bit Data segment (0x10) - flat 4GB
+    dw 0xFFFF                   ; Limit low
+    dw 0                        ; Base low
+    db 0                        ; Base middle
+    db 10010010b                ; Access: present, ring 0, data, writable
+    db 11001111b                ; Flags: 4KB granularity, 32-bit, limit high
+    db 0                        ; Base high
+
+    ; 16-bit Data segment (0x18) - for returning to real mode
+    dw 0xFFFF                   ; Limit low
+    dw 0                        ; Base low
+    db 0                        ; Base middle
+    db 10010010b                ; Access: present, ring 0, data, writable
+    db 00000000b                ; Flags: byte granularity, 16-bit
+    db 0                        ; Base high
+
+    ; 16-bit Code segment (0x20) - for returning to real mode
+    dw 0xFFFF                   ; Limit low
+    dw 0                        ; Base low
+    db 0                        ; Base middle
+    db 10011010b                ; Access: present, ring 0, code, readable
+    db 00000000b                ; Flags: byte granularity, 16-bit
+    db 0                        ; Base high
+
 gdt_end:
 
 gdt_descriptor:
@@ -1210,7 +1238,7 @@ gdt_descriptor:
     dd gdt_start
 
 ; ============================================================================
-; 32-bit Protected Mode Entry
+; 32-bit Protected Mode Entry (final jump to kernel)
 ; ============================================================================
 
 [BITS 32]
