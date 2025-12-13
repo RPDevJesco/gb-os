@@ -205,15 +205,19 @@ echo "[5/5] Copying to output directory..."
 if [ "$BUILD_NORMAL" = "yes" ]; then
     cp build/rustacean.img /output/
     cp build/rustacean.iso /output/
+    cp build/stage2.bin /output/
     echo "      /output/rustacean.img"
     echo "      /output/rustacean.iso"
+    echo "      /output/stage2.bin"
 fi
 
 if [ "$BUILD_GAMEBOY" = "yes" ]; then
     cp build/gameboy-system.img /output/
     cp build/gameboy-system.iso /output/
+    cp build/stage2-gameboy.bin /output/
     echo "      /output/gameboy-system.img"
     echo "      /output/gameboy-system.iso"
+    echo "      /output/stage2-gameboy.bin"
 
     if [ -f "build/mkgamedisk" ]; then
         cp build/mkgamedisk /output/
@@ -221,8 +225,10 @@ if [ "$BUILD_GAMEBOY" = "yes" ]; then
     fi
 fi
 
-# Always copy kernel for debugging
+# Always copy bootloader and kernel components for debugging/reuse
+cp build/boot.bin /output/
 cp build/kernel.bin /output/
+echo "      /output/boot.bin"
 echo "      /output/kernel.bin"
 
 echo ""
@@ -234,6 +240,7 @@ if [ "$BUILD_NORMAL" = "yes" ]; then
     echo ""
     echo "  Normal Mode:"
     echo "    qemu-system-i386 -fda output/rustacean.img -boot a -m 256M"
+    echo "    qemu-system-i386 -cdrom output/rustacean.iso -boot d -m 256M"
 fi
 
 if [ "$BUILD_GAMEBOY" = "yes" ]; then
@@ -241,7 +248,18 @@ if [ "$BUILD_GAMEBOY" = "yes" ]; then
     echo "  GameBoy Mode:"
     echo "    1. Create game floppy: ./output/mkgamedisk game.gb output/game.img"
     echo "    2. Run: qemu-system-i386 -fda output/gameboy-system.img -boot a -m 256M"
+    echo "       Or:  qemu-system-i386 -cdrom output/gameboy-system.iso -boot d -m 256M"
     echo "    3. When prompted, swap to game floppy in QEMU monitor"
 fi
 
+echo ""
+echo "  Components (for custom builds):"
+echo "    boot.bin        - Stage 1 bootloader (512 bytes)"
+if [ "$BUILD_NORMAL" = "yes" ]; then
+    echo "    stage2.bin      - Stage 2 bootloader (normal mode)"
+fi
+if [ "$BUILD_GAMEBOY" = "yes" ]; then
+    echo "    stage2-gameboy.bin - Stage 2 bootloader (GameBoy mode)"
+fi
+echo "    kernel.bin      - Kernel binary"
 echo ""

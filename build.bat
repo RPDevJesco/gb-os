@@ -81,6 +81,13 @@ echo   build.bat                           Build normal Rustacean OS
 echo   build.bat --gameboy                 Build GameBoy edition (no ROM)
 echo   build.bat --gameboy --rom tetris.gb Build GameBoy edition WITH ROM embedded
 echo   build.bat --both --rom pokemon.gb   Build both editions, GameBoy has ROM
+echo.
+echo Output files will include:
+echo   - boot.bin             Stage 1 bootloader
+echo   - stage2.bin           Stage 2 bootloader (normal mode)
+echo   - stage2-gameboy.bin   Stage 2 bootloader (GameBoy mode)
+echo   - kernel.bin           Kernel binary
+echo   - *.img, *.iso         Bootable disk images
 exit /b 0
 
 :done_parsing
@@ -134,6 +141,21 @@ dir "%OUTPUT_DIR%"
 
 echo.
 echo Done! Output files are in: %OUTPUT_DIR%
+echo.
+
+echo Components available for custom builds:
+echo   boot.bin        - Stage 1 bootloader (512 bytes)
+if "%BUILD_MODE%"=="" (
+    echo   stage2.bin      - Stage 2 bootloader (normal mode)
+)
+if "%BUILD_MODE%"=="--both" (
+    echo   stage2.bin      - Stage 2 bootloader (normal mode)
+    echo   stage2-gameboy.bin - Stage 2 bootloader (GameBoy mode)
+)
+if "%BUILD_MODE%"=="--gameboy" (
+    echo   stage2-gameboy.bin - Stage 2 bootloader (GameBoy mode)
+)
+echo   kernel.bin      - Kernel binary
 echo.
 
 if "%BUILD_MODE%"=="--gameboy" (
