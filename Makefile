@@ -1,12 +1,13 @@
 # Rustacean OS + GameBoy Integration Makefile
 #
 # Builds either normal Rustacean OS or GameBoy edition from same codebase.
+# Uses LBA disk access (no floppy emulation) to support larger ROMs.
 #
 # Targets:
 #   make            - Build normal Rustacean OS
 #   make gameboy    - Build GameBoy edition
 #   make tools      - Build mkgamedisk ROM converter
-#   make game ROM=x - Create game floppy from ROM file
+#   make game ROM=x - Create game disk image from ROM file
 #   make run        - Run normal mode in QEMU
 #   make run-gb     - Run GameBoy mode in QEMU
 
@@ -33,7 +34,9 @@ STAGE2_GB_BIN := $(BUILD_DIR)/stage2-gameboy.bin
 KERNEL_ELF := $(TARGET_DIR)/rustacean-kernel
 KERNEL_BIN := $(BUILD_DIR)/kernel.bin
 
-# Floppy images
+# Disk images (larger than floppy to support bigger ROMs)
+# 8MB disk image = 16384 sectors (enough for 4MB+ ROMs like Pokemon)
+DISK_SECTORS := 16384
 NORMAL_IMG := $(BUILD_DIR)/rustacean.img
 GAMEBOY_IMG := $(BUILD_DIR)/gameboy-system.img
 
@@ -52,7 +55,7 @@ normal: $(NORMAL_IMG)
 	@echo "Run with: make run"
 
 $(NORMAL_IMG): $(BOOT_BIN) $(STAGE2_BIN) $(KERNEL_BIN)
-	$(DD) if=/dev/zero of=$@ bs=512 count=2880 2>/dev/null
+	$(DD) if=/dev/zero of=$@ bs=512 count=$(DISK_SECTORS) 2>/dev/null
 	$(DD) if=$(BOOT_BIN) of=$@ bs=512 count=1 conv=notrunc 2>/dev/null
 	$(DD) if=$(STAGE2_BIN) of=$@ bs=512 seek=1 conv=notrunc 2>/dev/null
 	$(DD) if=$(KERNEL_BIN) of=$@ bs=512 seek=33 conv=notrunc 2>/dev/null
@@ -69,10 +72,10 @@ gameboy: $(GAMEBOY_IMG)
 	@echo ""
 	@echo "=== GameBoy Edition built ==="
 	@echo "Run with: make run-gb"
-	@echo "Create game floppy with: make game ROM=path/to/game.gb"
+	@echo "Create game disk with: make game ROM=path/to/game.gb"
 
 $(GAMEBOY_IMG): $(BOOT_BIN) $(STAGE2_GB_BIN) $(KERNEL_BIN)
-	$(DD) if=/dev/zero of=$@ bs=512 count=2880 2>/dev/null
+	$(DD) if=/dev/zero of=$@ bs=512 count=$(DISK_SECTORS) 2>/dev/null
 	$(DD) if=$(BOOT_BIN) of=$@ bs=512 count=1 conv=notrunc 2>/dev/null
 	$(DD) if=$(STAGE2_GB_BIN) of=$@ bs=512 seek=1 conv=notrunc 2>/dev/null
 	$(DD) if=$(KERNEL_BIN) of=$@ bs=512 seek=33 conv=notrunc 2>/dev/null
@@ -122,44 +125,61 @@ endif
 	@echo "Game floppy created: $(BUILD_DIR)/game.img"
 
 # ============================================================================
-# Run in QEMU
+# Run in QEMU (using hard disk emulation for LBA support)
 # ============================================================================
 
 # Run normal Rustacean OS
 run: $(NORMAL_IMG)
 	qemu-system-i386 \
-		-fda $< \
-		-boot a \
+		-drive file=$<,format=raw,if=ide \
+		-boot c \
 		-m 256M \
 		-vga std
 
-# Run GameBoy edition (prompts for floppy swap)
+# Run GameBoy edition
 run-gb: $(GAMEBOY_IMG)
-	@echo "GameBoy Mode: You'll be prompted to 'insert' game floppy"
-	@echo "In QEMU, use Ctrl+Alt+2 for monitor, then: change floppy0 build/game.img"
+	@echo "GameBoy Mode: ROM can be embedded in disk image or loaded from partition"
 	@echo ""
 	qemu-system-i386 \
-		-fda $< \
-		-boot a \
+		-drive file=$<,format=raw,if=ide \
+		-boot c \
 		-m 256M \
 		-vga std
 
-# Run GameBoy with game pre-loaded (for testing)
+# Run GameBoy with ROM embedded in disk image
 # Usage: make run-game ROM=path/to/game.gb
-run-game: $(GAMEBOY_IMG) game
-	@echo "Running GameBoy OS with game floppy..."
+run-game: $(GAMEBOY_IMG)
+ifndef ROM
+	$(error ROM not specified. Usage: make run-game ROM=path/to/game.gb)
+endif
+	@echo "Embedding ROM into disk image..."
+	@# Create ROM header (512 bytes): 'GBOY' + size + title + padding
+	@ROM_SIZE=$$(stat -c%s "$(ROM)"); \
+	ROM_TITLE=$$(dd if="$(ROM)" bs=1 skip=308 count=16 2>/dev/null | tr -d '\0' | tr -cd '[:alnum:] '); \
+	[ -z "$$ROM_TITLE" ] && ROM_TITLE="UNKNOWN"; \
+	printf 'GBOY' > $(BUILD_DIR)/rom_header.bin; \
+	printf "$$(printf '\\x%02x\\x%02x\\x%02x\\x%02x' \
+		$$((ROM_SIZE & 0xFF)) \
+		$$(((ROM_SIZE >> 8) & 0xFF)) \
+		$$(((ROM_SIZE >> 16) & 0xFF)) \
+		$$(((ROM_SIZE >> 24) & 0xFF)))" >> $(BUILD_DIR)/rom_header.bin; \
+	printf "%-32s" "$$ROM_TITLE" | head -c 32 >> $(BUILD_DIR)/rom_header.bin; \
+	$(DD) if=/dev/zero bs=1 count=$$((512 - 40)) >> $(BUILD_DIR)/rom_header.bin 2>/dev/null; \
+	$(DD) if=$(BUILD_DIR)/rom_header.bin of=$< bs=512 seek=289 conv=notrunc 2>/dev/null; \
+	$(DD) if="$(ROM)" of=$< bs=512 seek=290 conv=notrunc 2>/dev/null; \
+	echo "ROM embedded: $$ROM_TITLE ($$ROM_SIZE bytes)"
+	@echo "Running GameBoy OS with embedded ROM..."
 	qemu-system-i386 \
-		-fda $(GAMEBOY_IMG) \
-		-fdb $(BUILD_DIR)/game.img \
-		-boot a \
+		-drive file=$<,format=raw,if=ide \
+		-boot c \
 		-m 256M \
 		-vga std
 
 # Debug mode (text output to serial)
 debug: $(NORMAL_IMG)
 	qemu-system-i386 \
-		-fda $< \
-		-boot a \
+		-drive file=$<,format=raw,if=ide \
+		-boot c \
 		-m 256M \
 		-nographic \
 		-serial mon:stdio

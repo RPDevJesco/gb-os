@@ -297,7 +297,7 @@ fn run_gameboy_emulator() -> ! {
     let boot_info = unsafe { BootInfo::from_ptr(0x500 as *const u8) };
 
     let rom_data: Vec<u8> = if boot_info.rom_addr != 0 && boot_info.rom_size > 0 {
-        // ROM loaded by bootloader
+        // ROM loaded by bootloader (embedded in disk image)
         let rom_slice = unsafe {
             core::slice::from_raw_parts(
                 boot_info.rom_addr as *const u8,
@@ -306,9 +306,15 @@ fn run_gameboy_emulator() -> ! {
         };
         rom_slice.to_vec()
     } else {
-        // No ROM loaded - show error and halt
-        show_no_rom_error();
-        loop { unsafe { core::arch::asm!("hlt"); } }
+        // No ROM embedded - try to load from FAT16 partition
+        match try_load_rom_from_partition() {
+            Some(data) => data,
+            None => {
+                // No ROM found anywhere - show error and halt
+                show_no_rom_error();
+                loop { unsafe { core::arch::asm!("hlt"); } }
+            }
+        }
     };
 
     // Create emulator
@@ -362,6 +368,59 @@ fn run_gameboy_emulator() -> ! {
             unsafe { core::arch::asm!("hlt"); }
         }
         last_frame_ticks = target_ticks;
+    }
+}
+
+/// Try to load a ROM from a FAT16 partition
+///
+/// This function attempts to:
+/// 1. Detect ATA drives
+/// 2. Find a FAT16 partition (partition 2, type 0x06/0x0E)
+/// 3. List ROM files (.gb, .gbc) in the root directory
+/// 4. Load the first ROM found (or show a selection menu in the future)
+fn try_load_rom_from_partition() -> Option<alloc::vec::Vec<u8>> {
+    use crate::drivers::ata::{Ata, AtaDrive};
+    use crate::fs::fat16::{Fat16, find_roms_partition};
+
+    // Try primary master drive first (most common for hard disks)
+    let mut ata = Ata::new(AtaDrive::PrimaryMaster);
+
+    // Find the ROMS partition (partition 2 with FAT16 type)
+    let partition_lba = match find_roms_partition(&mut ata) {
+        Ok(lba) => lba,
+        Err(_) => return None,
+    };
+
+    // Mount the FAT16 filesystem
+    let mut fat16 = match Fat16::new(AtaDrive::PrimaryMaster, partition_lba) {
+        Ok(fs) => fs,
+        Err(_) => return None,
+    };
+
+    // List ROM files
+    let roms = match fat16.list_roms() {
+        Ok(list) => list,
+        Err(_) => return None,
+    };
+
+    // If no ROMs found, return None
+    if roms.is_empty() {
+        return None;
+    }
+
+    // Load the first ROM found
+    // In the future, this could show a selection menu
+    let rom = &roms[0];
+
+    // Allocate buffer for ROM data
+    let mut rom_data = alloc::vec![0u8; rom.size as usize];
+
+    // Load the ROM into the buffer
+    unsafe {
+        match fat16.load_rom(rom, rom_data.as_mut_ptr()) {
+            Ok(_) => Some(rom_data),
+            Err(_) => None,
+        }
     }
 }
 

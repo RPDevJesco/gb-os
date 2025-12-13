@@ -310,7 +310,7 @@ verify_a20:
     ret
 
 ; ============================================================================
-; Load Kernel
+; Load Kernel (using LBA extensions - no floppy geometry)
 ; ============================================================================
 
 KERNEL_SECTOR   equ 33          ; After boot(1) + stage2(32)
@@ -318,20 +318,12 @@ KERNEL_SECTORS  equ 200         ; 100KB kernel (94KB actual + headroom)
 KERNEL_LOAD_SEG equ 0x2000      ; Load to 0x20000
 KERNEL_LOAD_OFF equ 0x0000
 
-SECTORS_PER_TRACK equ 18
-HEADS           equ 2
-
 load_kernel:
     push    es
     push    bp
 
-    ; Reset disk
-    xor     ax, ax
-    mov     dl, [boot_drive]
-    int     0x13
-
     mov     word [sectors_left], KERNEL_SECTORS
-    mov     word [current_lba], KERNEL_SECTOR
+    mov     dword [current_lba], KERNEL_SECTOR
     mov     word [load_segment], KERNEL_LOAD_SEG
     mov     word [load_offset], KERNEL_LOAD_OFF
 
@@ -339,52 +331,37 @@ load_kernel:
     cmp     word [sectors_left], 0
     je      .done
 
-    ; LBA to CHS conversion
-    mov     ax, [current_lba]
-    xor     dx, dx
-    mov     cx, SECTORS_PER_TRACK
-    div     cx                      ; AX = head + track*2, DX = sector-1
-    push    dx
-    xor     dx, dx
-    mov     cx, HEADS
-    div     cx                      ; AX = track, DX = head
-    mov     ch, al                  ; Cylinder
-    mov     dh, dl                  ; Head
-    pop     ax
-    inc     al
-    mov     cl, al                  ; Sector (1-based)
+    ; Calculate how many sectors to read (max 64 at a time for safety)
+    mov     ax, [sectors_left]
+    cmp     ax, 64
+    jbe     .count_ok
+    mov     ax, 64
+.count_ok:
+    mov     [sectors_to_read], ax
 
-    ; Destination
+    ; Set up DAP for LBA read
+    mov     word [dap_count], ax
+    mov     ax, [load_offset]
+    mov     [dap_offset], ax
     mov     ax, [load_segment]
-    mov     es, ax
-    mov     bx, [load_offset]
+    mov     [dap_segment], ax
+    mov     eax, [current_lba]
+    mov     [dap_lba], eax
+    mov     dword [dap_lba + 4], 0
 
-    ; Read with retry
+    ; Perform LBA read with retry
     mov     bp, 3
 .retry:
-    push    bx
-    push    cx
-    push    dx
-    push    es
-
-    mov     ah, 0x02
-    mov     al, 1
+    mov     si, dap
+    mov     ah, 0x42
     mov     dl, [boot_drive]
     int     0x13
-
-    pop     es
-    pop     dx
-    pop     cx
-    pop     bx
-
     jnc     .read_ok
 
     ; Reset and retry
-    push    dx
     xor     ax, ax
     mov     dl, [boot_drive]
     int     0x13
-    pop     dx
     dec     bp
     jnz     .retry
     jmp     .error
@@ -400,14 +377,16 @@ load_kernel:
     pop     di
     pop     es
 
-    ; Advance load address
-    add     word [load_offset], 512
-    jnc     .no_wrap
-    add     word [load_segment], 0x1000
-    mov     word [load_offset], 0
-.no_wrap:
-    inc     word [current_lba]
-    dec     word [sectors_left]
+    ; Update counters
+    movzx   eax, word [sectors_to_read]
+    sub     [sectors_left], ax
+    add     [current_lba], eax
+
+    ; Update load address (sectors_to_read * 32 paragraphs per sector)
+    mov     ax, [sectors_to_read]
+    shl     ax, 5                   ; * 32 (paragraphs per sector)
+    add     [load_segment], ax
+
     jmp     .loop
 
 .done:
@@ -423,8 +402,20 @@ load_kernel:
     ret
 
 ; ============================================================================
-; Load ROM (if present)
+; Load ROM (if present) - using LBA extensions
 ; ============================================================================
+;
+; ROM loading now supports larger ROMs without floppy size restrictions.
+; The ROM can be embedded in the disk image at a specific sector, or
+; the kernel can load it from a FAT16 partition at runtime.
+;
+; ROM Header format (at ROM_HEADER_SECTOR):
+;   0x00: 'GBOY' magic (4 bytes)
+;   0x04: ROM size in bytes (4 bytes, little-endian)
+;   0x08: ROM title (32 bytes, null-terminated)
+;   0x28: Reserved (padding to 512 bytes)
+;
+; ROM data follows immediately after the header sector.
 
 ROM_HEADER_SECTOR equ 289       ; Where ROM header is stored
 ROM_LOAD_SEG      equ 0x3000    ; Temporary load buffer at 0x30000
@@ -434,29 +425,15 @@ load_rom:
     push    es
     push    bp
 
-    ; Load ROM header sector to temporary buffer
-    mov     ax, ROM_LOAD_SEG
-    mov     es, ax
-    xor     bx, bx
+    ; Load ROM header sector using LBA
+    mov     word [dap_count], 1
+    mov     word [dap_offset], 0
+    mov     word [dap_segment], ROM_LOAD_SEG
+    mov     dword [dap_lba], ROM_HEADER_SECTOR
+    mov     dword [dap_lba + 4], 0
 
-    ; LBA to CHS for sector 289
-    mov     ax, ROM_HEADER_SECTOR
-    xor     dx, dx
-    mov     cx, SECTORS_PER_TRACK
-    div     cx
-    push    dx
-    xor     dx, dx
-    mov     cx, HEADS
-    div     cx
-    mov     ch, al
-    mov     dh, dl
-    pop     ax
-    inc     al
-    mov     cl, al
-
-    ; Read header sector
-    mov     ah, 0x02
-    mov     al, 1
+    mov     si, dap
+    mov     ah, 0x42
     mov     dl, [boot_drive]
     int     0x13
     jc      .no_rom
@@ -488,8 +465,8 @@ load_rom:
     shr     eax, 9              ; Divide by 512
     mov     [rom_sectors], ax
 
-    ; Load ROM data starting at sector 290
-    mov     word [current_lba], ROM_HEADER_SECTOR + 1
+    ; Load ROM data starting at sector after header
+    mov     dword [current_lba], ROM_HEADER_SECTOR + 1
     mov     word [load_segment], ROM_LOAD_SEG
     mov     word [load_offset], 0
     mov     ax, [rom_sectors]
@@ -499,64 +476,52 @@ load_rom:
     cmp     word [sectors_left], 0
     je      .load_done
 
-    ; LBA to CHS
-    mov     ax, [current_lba]
-    xor     dx, dx
-    mov     cx, SECTORS_PER_TRACK
-    div     cx
-    push    dx
-    xor     dx, dx
-    mov     cx, HEADS
-    div     cx
-    mov     ch, al
-    mov     dh, dl
-    pop     ax
-    inc     al
-    mov     cl, al
+    ; Calculate how many sectors to read (max 64 at a time)
+    mov     ax, [sectors_left]
+    cmp     ax, 64
+    jbe     .rom_count_ok
+    mov     ax, 64
+.rom_count_ok:
+    mov     [sectors_to_read], ax
 
-    ; Destination
+    ; Set up DAP for LBA read
+    mov     word [dap_count], ax
+    mov     ax, [load_offset]
+    mov     [dap_offset], ax
     mov     ax, [load_segment]
-    mov     es, ax
-    mov     bx, [load_offset]
+    mov     [dap_segment], ax
+    mov     eax, [current_lba]
+    mov     [dap_lba], eax
+    mov     dword [dap_lba + 4], 0
 
-    ; Read sector
+    ; Perform LBA read with retry
     mov     bp, 3
 .rom_retry:
-    push    bx
-    push    cx
-    push    dx
-    push    es
-
-    mov     ah, 0x02
-    mov     al, 1
+    mov     si, dap
+    mov     ah, 0x42
     mov     dl, [boot_drive]
     int     0x13
-
-    pop     es
-    pop     dx
-    pop     cx
-    pop     bx
-
     jnc     .rom_read_ok
 
-    push    dx
+    ; Reset and retry
     xor     ax, ax
     mov     dl, [boot_drive]
     int     0x13
-    pop     dx
     dec     bp
     jnz     .rom_retry
     jmp     .no_rom
 
 .rom_read_ok:
-    ; Advance
-    add     word [load_offset], 512
-    jnc     .rom_no_wrap
-    add     word [load_segment], 0x1000
-    mov     word [load_offset], 0
-.rom_no_wrap:
-    inc     word [current_lba]
-    dec     word [sectors_left]
+    ; Update counters
+    movzx   eax, word [sectors_to_read]
+    sub     [sectors_left], ax
+    add     [current_lba], eax
+
+    ; Update load address
+    mov     ax, [sectors_to_read]
+    shl     ax, 5                   ; * 32 (paragraphs per sector)
+    add     [load_segment], ax
+
     jmp     .load_loop
 
 .load_done:
@@ -569,7 +534,7 @@ load_rom:
     ret
 
 .no_rom:
-    ; No ROM found
+    ; No ROM found - kernel will try to load from partition
     mov     dword [rom_addr], 0
     mov     dword [rom_size], 0
 
@@ -578,12 +543,31 @@ load_rom:
     stc                         ; Set carry to indicate no ROM
     ret
 
+; ============================================================================
+; Disk Address Packet (DAP) for LBA reads
+; ============================================================================
+
+align 4
+dap:
+    db 0x10                     ; Size of DAP (16 bytes)
+    db 0                        ; Reserved
+dap_count:
+    dw 0                        ; Number of sectors to read
+dap_offset:
+    dw 0                        ; Destination offset
+dap_segment:
+    dw 0                        ; Destination segment
+dap_lba:
+    dd 0                        ; LBA low 32 bits
+    dd 0                        ; LBA high 32 bits
+
 ; Variables
 sectors_left:   dw 0
-current_lba:    dw 0
+current_lba:    dd 0            ; Changed to 32-bit for larger disk support
 load_segment:   dw 0
 load_offset:    dw 0
 rom_sectors:    dw 0
+sectors_to_read: dw 0
 
 ; ============================================================================
 ; Print String (16-bit, works before mode switch)

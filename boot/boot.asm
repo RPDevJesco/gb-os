@@ -2,7 +2,8 @@
 ; boot.asm - Stage 1 Bootloader for RetroFuture GB
 ; ============================================================================
 ;
-; Minimal 512-byte boot sector. Loads stage 2 and jumps to it.
+; Minimal 512-byte boot sector using LBA extensions (no floppy emulation).
+; Loads stage 2 and jumps to it.
 ;
 ; Memory map:
 ;   0x7C00  - This bootloader (512 bytes)
@@ -22,10 +23,6 @@
 STAGE2_OFFSET   equ 0x7E00
 STAGE2_SECTORS  equ 32              ; 16KB for stage 2
 BOOT_DRIVE_ADDR equ 0x0500          ; Store boot drive here temporarily
-
-; Floppy geometry (1.44MB)
-SECTORS_PER_TRACK equ 18
-HEADS           equ 2
 
 ; ============================================================================
 ; Entry Point
@@ -52,67 +49,36 @@ start:
     mov     si, msg_boot
     call    print_string
 
-    ; Reset disk system
-    xor     ax, ax
+    ; Check for LBA extensions support
+    mov     ah, 0x41
+    mov     bx, 0x55AA
+    mov     dl, [BOOT_DRIVE_ADDR]
+    int     0x13
+    jc      .no_lba
+    cmp     bx, 0xAA55
+    jne     .no_lba
+    jmp     .load_stage2
+
+.no_lba:
+    mov     si, msg_no_lba
+    jmp     halt
+
+.load_stage2:
+    ; Load stage 2 using LBA extensions
+    ; Set up DAP (Disk Address Packet)
+    mov     word [dap_sectors], STAGE2_SECTORS
+    mov     word [dap_offset], STAGE2_OFFSET
+    mov     word [dap_segment], 0
+    mov     dword [dap_lba_lo], 1    ; Start at LBA 1 (after boot sector)
+    mov     dword [dap_lba_hi], 0
+
+    ; Perform LBA read
+    mov     si, dap
+    mov     ah, 0x42
     mov     dl, [BOOT_DRIVE_ADDR]
     int     0x13
     jc      disk_error
 
-    ; Load stage 2 sector by sector
-    mov     word [cur_lba], 1       ; Start at LBA 1 (after boot sector)
-    mov     word [sectors_rem], STAGE2_SECTORS
-    mov     word [dest_ptr], STAGE2_OFFSET
-
-.load_loop:
-    cmp     word [sectors_rem], 0
-    je      .load_done
-
-    ; Convert LBA to CHS
-    mov     ax, [cur_lba]
-    xor     dx, dx
-    mov     cx, SECTORS_PER_TRACK
-    div     cx                      ; AX = track*heads + head, DX = sector-1
-    push    dx                      ; Save sector-1
-    xor     dx, dx
-    mov     cx, HEADS
-    div     cx                      ; AX = cylinder, DX = head
-    mov     ch, al                  ; CH = cylinder
-    mov     dh, dl                  ; DH = head
-    pop     ax
-    inc     al
-    mov     cl, al                  ; CL = sector (1-based)
-
-    ; Set up for read
-    mov     bx, [dest_ptr]
-    mov     si, 3                   ; Retry count
-
-.retry:
-    mov     ah, 0x02                ; BIOS read sectors
-    mov     al, 1                   ; One sector at a time
-    mov     dl, [BOOT_DRIVE_ADDR]
-    int     0x13
-    jnc     .read_ok
-
-    ; Reset and retry
-    xor     ax, ax
-    mov     dl, [BOOT_DRIVE_ADDR]
-    int     0x13
-    dec     si
-    jnz     .retry
-    jmp     disk_error
-
-.read_ok:
-    ; Progress dot
-    mov     ax, 0x0E2E
-    int     0x10
-
-    ; Advance
-    add     word [dest_ptr], 512
-    inc     word [cur_lba]
-    dec     word [sectors_rem]
-    jmp     .load_loop
-
-.load_done:
     ; Print OK
     mov     si, msg_ok
     call    print_string
@@ -162,6 +128,25 @@ print_string:
     ret
 
 ; ============================================================================
+; Disk Address Packet (DAP) for LBA reads
+; ============================================================================
+
+align 4
+dap:
+    db 0x10                     ; Size of DAP (16 bytes)
+    db 0                        ; Reserved
+dap_sectors:
+    dw 0                        ; Number of sectors to read
+dap_offset:
+    dw 0                        ; Destination offset
+dap_segment:
+    dw 0                        ; Destination segment
+dap_lba_lo:
+    dd 0                        ; LBA low 32 bits
+dap_lba_hi:
+    dd 0                        ; LBA high 32 bits
+
+; ============================================================================
 ; Data
 ; ============================================================================
 
@@ -169,11 +154,7 @@ msg_boot:       db 'RetroFutureGB', 13, 10, 'Loading', 0
 msg_ok:         db ' OK', 13, 10, 0
 msg_disk_err:   db 13, 10, 'Disk error!', 0
 msg_stage2_err: db 13, 10, 'Stage2 bad!', 0
-
-; Variables
-cur_lba:        dw 0
-sectors_rem:    dw 0
-dest_ptr:       dw 0
+msg_no_lba:     db 13, 10, 'No LBA!', 0
 
 ; ============================================================================
 ; Boot Sector Padding and Signature

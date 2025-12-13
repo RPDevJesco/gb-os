@@ -1,6 +1,7 @@
 #!/bin/bash
 #
 # Rustacean OS Docker Build Script (with GameBoy Mode)
+# Uses LBA disk access (no floppy emulation) to support larger ROMs.
 #
 # Usage:
 #   /build.sh                 # Build normal Rustacean OS
@@ -132,27 +133,35 @@ else
 fi
 
 # ============================================================================
-# Create Disk Images
+# Create Disk Images (larger than floppy to support bigger ROMs)
 # ============================================================================
 
 echo "[4/5] Creating disk images..."
 
+# 8MB disk image = 16384 sectors (enough for 4MB+ ROMs like Pokemon)
+DISK_SECTORS=16384
+
 if [ "$BUILD_NORMAL" = "yes" ]; then
-    echo "      Creating rustacean.img (floppy)..."
-    dd if=/dev/zero of=build/rustacean.img bs=512 count=2880 2>/dev/null
+    echo "      Creating rustacean.img (8MB disk image)..."
+    dd if=/dev/zero of=build/rustacean.img bs=512 count=$DISK_SECTORS 2>/dev/null
     dd if=build/boot.bin of=build/rustacean.img bs=512 count=1 conv=notrunc 2>/dev/null
     dd if=build/stage2.bin of=build/rustacean.img bs=512 seek=1 conv=notrunc 2>/dev/null
     dd if=build/kernel.bin of=build/rustacean.img bs=512 seek=33 conv=notrunc 2>/dev/null
     echo "      rustacean.img: $(stat -c%s build/rustacean.img) bytes"
 
-    echo "      Creating rustacean.iso (floppy emulation)..."
+    echo "      Creating rustacean.iso (El Torito no-emulation)..."
     mkdir -p build/iso
     cp build/rustacean.img build/iso/
+    # Use El Torito no-emulation mode for CD boot (no floppy emulation)
     genisoimage -o build/rustacean.iso \
+        -no-emul-boot \
+        -boot-load-size 4 \
         -b rustacean.img \
         -V "RUSTACEAN_OS" \
         build/iso/ 2>/dev/null || \
     xorriso -as mkisofs -o build/rustacean.iso \
+        -no-emul-boot \
+        -boot-load-size 4 \
         -b rustacean.img \
         -V "RUSTACEAN_OS" \
         build/iso/ 2>/dev/null
@@ -161,8 +170,8 @@ if [ "$BUILD_NORMAL" = "yes" ]; then
 fi
 
 if [ "$BUILD_GAMEBOY" = "yes" ]; then
-    echo "      Creating gameboy-system.img (floppy)..."
-    dd if=/dev/zero of=build/gameboy-system.img bs=512 count=2880 2>/dev/null
+    echo "      Creating gameboy-system.img (8MB disk image)..."
+    dd if=/dev/zero of=build/gameboy-system.img bs=512 count=$DISK_SECTORS 2>/dev/null
     dd if=build/boot.bin of=build/gameboy-system.img bs=512 count=1 conv=notrunc 2>/dev/null
     dd if=build/stage2-gameboy.bin of=build/gameboy-system.img bs=512 seek=1 conv=notrunc 2>/dev/null
     dd if=build/kernel.bin of=build/gameboy-system.img bs=512 seek=33 conv=notrunc 2>/dev/null
@@ -176,6 +185,13 @@ if [ "$BUILD_GAMEBOY" = "yes" ]; then
     if [ -n "$ROM_FILE" ] && [ -f "$ROM_FILE" ]; then
         echo "      Embedding ROM: $ROM_FILE"
         ROM_SIZE=$(stat -c%s "$ROM_FILE")
+
+        # Check if ROM fits in disk image (max ~7.5MB with current layout)
+        MAX_ROM_SIZE=$((($DISK_SECTORS - 290) * 512))
+        if [ "$ROM_SIZE" -gt "$MAX_ROM_SIZE" ]; then
+            echo "      WARNING: ROM too large ($ROM_SIZE bytes > $MAX_ROM_SIZE bytes max)"
+            echo "      ROM will be truncated!"
+        fi
 
         # Extract title from ROM header (bytes 0x134-0x143)
         ROM_TITLE=$(dd if="$ROM_FILE" bs=1 skip=308 count=16 2>/dev/null | tr -d '\0' | tr -cd '[:alnum:] ')
@@ -205,18 +221,24 @@ if [ "$BUILD_GAMEBOY" = "yes" ]; then
     else
         echo "      No ROM file specified (use ROM_FILE env var or mount to /input/game.gb)"
         echo "      Creating base image without embedded ROM"
+        echo "      Kernel will try to load ROM from FAT16 partition at runtime"
     fi
 
     echo "      gameboy-system.img: $(stat -c%s build/gameboy-system.img) bytes"
 
-    echo "      Creating gameboy-system.iso (floppy emulation)..."
+    echo "      Creating gameboy-system.iso (El Torito no-emulation)..."
     mkdir -p build/iso
     cp build/gameboy-system.img build/iso/
+    # Use El Torito no-emulation mode for CD boot (no floppy emulation)
     genisoimage -o build/gameboy-system.iso \
+        -no-emul-boot \
+        -boot-load-size 4 \
         -b gameboy-system.img \
         -V "GAMEBOY_OS" \
         build/iso/ 2>/dev/null || \
     xorriso -as mkisofs -o build/gameboy-system.iso \
+        -no-emul-boot \
+        -boot-load-size 4 \
         -b gameboy-system.img \
         -V "GAMEBOY_OS" \
         build/iso/ 2>/dev/null

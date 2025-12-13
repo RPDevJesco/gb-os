@@ -1,9 +1,10 @@
 //! Filesystem Layer
 //!
 //! Rustacean OS filesystem support with Plan 9-style "everything is a file" philosophy.
-//! Primary filesystem is exFAT for USB compatibility.
+//! Supports FAT16 for ROM loading from partitions and exFAT for USB compatibility.
 
 pub mod exfat;
+pub mod fat16;
 
 /// Maximum path length
 pub const MAX_PATH: usize = 256;
