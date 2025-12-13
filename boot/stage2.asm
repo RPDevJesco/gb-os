@@ -63,23 +63,37 @@ stage2_entry:
     ; Save boot drive (passed in DL)
     mov     [boot_drive], dl
 
-    ; Check for VBR boot info at 0x500
+    ; Check for VBR boot info at 0x500 (installed HDD boot)
     mov     eax, [BOOT_INFO_ADDR]
     cmp     eax, VBR_MAGIC
-    jne     .raw_boot
+    jne     .check_cd
 
     ; Partition boot - get partition start LBA from boot info
     mov     eax, [BOOT_INFO_ADDR + 4]   ; Partition start LBA
     mov     [partition_start], eax
     mov     byte [boot_type], 1         ; Partition boot
+    mov     dword [cd_sector_size], 512 ; Normal sectors
+    jmp     .continue
+
+.check_cd:
+    ; Check for CD boot marker 'CDRM' at 0x500
+    cmp     eax, 'CDRM'
+    jne     .raw_boot
+
+    ; CD boot - get bi_file from 0x504
+    mov     eax, [0x504]
+    mov     [cd_base_sector], eax
+    mov     byte [boot_type], 2         ; CD boot
+    mov     dword [partition_start], 0
+    mov     dword [cd_sector_size], 2048
     jmp     .continue
 
 .raw_boot:
-    ; Raw media boot (floppy, CD, USB)
-    ; Check if boot.asm left us a boot_lba_base at 0x504 (for CD boot)
-    mov     eax, [0x504]
-    mov     [partition_start], eax      ; Use as partition_start (will be 0 for non-CD)
+    ; Raw media boot (floppy, USB) - partition start is 0
+    mov     dword [partition_start], 0
+    mov     dword [cd_base_sector], 0
     mov     byte [boot_type], 0         ; Raw boot
+    mov     dword [cd_sector_size], 512
 
 .continue:
     ; Display banner
@@ -249,8 +263,8 @@ check_lba_support:
 ; ============================================================================
 ; read_sectors_lba - Read sectors using LBA (with CHS fallback)
 ; Input:
-;   EAX = LBA (relative to partition start)
-;   CX  = Number of sectors
+;   EAX = LBA (relative to partition/image start, in 512-byte sectors)
+;   CX  = Number of 512-byte sectors
 ;   ES:BX = Destination buffer
 ; Returns: CF set on error
 ; ============================================================================
@@ -261,11 +275,16 @@ read_sectors_lba:
     push    ecx
     push    edx
     push    si
+    push    edi
 
-    ; Add partition start to get absolute LBA
+    ; Check if CD boot mode
+    cmp     byte [boot_type], 2
+    je      .cd_mode
+
+    ; Normal mode: Add partition start to get absolute LBA
     add     eax, [partition_start]
     mov     [dap_lba], eax
-    mov     word [dap_lba + 4], 0
+    mov     dword [dap_lba + 4], 0
 
     ; Set up DAP
     mov     [dap_count], cx
@@ -285,25 +304,18 @@ read_sectors_lba:
 
 .try_chs:
     ; Fall back to CHS for floppy/older systems
-    ; LBA to CHS: C = LBA / (H * S), H = (LBA / S) % H, S = (LBA % S) + 1
-    ; Using standard floppy geometry: 18 sectors/track, 2 heads
     mov     eax, [dap_lba]
-
-    ; Calculate sector (LBA % 18) + 1
     xor     edx, edx
     mov     ebx, 18
     div     ebx
     inc     dl
-    mov     cl, dl              ; CL = sector
-
-    ; Calculate head and cylinder
+    mov     cl, dl
     xor     edx, edx
     mov     ebx, 2
     div     ebx
-    mov     dh, dl              ; DH = head
-    mov     ch, al              ; CH = cylinder (low 8 bits)
+    mov     dh, dl
+    mov     ch, al
 
-    ; Read sectors
     mov     ax, es
     push    ax
     mov     ax, [dap_segment]
@@ -316,6 +328,114 @@ read_sectors_lba:
     pop     ax
     mov     es, ax
     jc      .error
+    jmp     .success
+
+.cd_mode:
+    ; CD mode: sectors are 2048 bytes, need to convert
+    ; EAX = 512-byte sector relative to boot image
+    ; Convert to byte offset, then to CD sector
+
+    ; Save destination
+    mov     [cd_dest_seg], es
+    mov     [cd_dest_off], bx
+    mov     [cd_sectors_want], cx
+
+    ; Calculate byte offset: byte_off = EAX * 512
+    shl     eax, 9              ; * 512
+    mov     [cd_byte_offset], eax
+
+    ; Calculate CD sector: cd_sector = cd_base_sector + byte_off / 2048
+    shr     eax, 11             ; / 2048
+    add     eax, [cd_base_sector]
+    mov     [cd_read_sector], eax
+
+    ; Calculate offset within CD sector: cd_off = byte_off % 2048
+    mov     eax, [cd_byte_offset]
+    and     eax, 2047           ; % 2048
+    mov     [cd_start_offset], eax
+
+    ; Calculate total bytes needed
+    movzx   eax, word [cd_sectors_want]
+    shl     eax, 9              ; * 512
+    mov     [cd_bytes_need], eax
+
+    ; Calculate how many CD sectors to read
+    ; cd_sectors = ceil((cd_start_offset + cd_bytes_need) / 2048)
+    add     eax, [cd_start_offset]
+    add     eax, 2047           ; for ceiling
+    shr     eax, 11             ; / 2048
+    mov     [cd_sectors_read], eax
+
+.cd_read_loop:
+    cmp     dword [cd_bytes_need], 0
+    je      .success
+
+    ; Read one CD sector to temp buffer
+    mov     eax, [cd_read_sector]
+    mov     [dap_lba], eax
+    mov     dword [dap_lba + 4], 0
+    mov     word [dap_count], 1
+    mov     word [dap_offset], 0
+    mov     word [dap_segment], CD_TEMP_SEG
+
+    mov     si, dap
+    mov     ah, 0x42
+    mov     dl, [boot_drive]
+    int     0x13
+    jc      .error
+
+    ; Copy relevant bytes from temp buffer to destination
+    ; Source: CD_TEMP_SEG:cd_start_offset
+    ; Dest: cd_dest_seg:cd_dest_off
+    ; Count: min(2048 - cd_start_offset, cd_bytes_need)
+
+    mov     eax, 2048
+    sub     eax, [cd_start_offset]  ; bytes available in this sector
+    cmp     eax, [cd_bytes_need]
+    jbe     .copy_count_ok
+    mov     eax, [cd_bytes_need]
+.copy_count_ok:
+    mov     ecx, eax                ; ECX = bytes to copy
+
+    ; Load all values while DS is still segment 0
+    mov     si, word [cd_start_offset]  ; source offset in temp buffer
+    mov     di, [cd_dest_off]           ; dest offset
+    mov     ax, [cd_dest_seg]           ; dest segment
+    mov     bx, ax                      ; save dest segment in BX
+
+    ; Set up segments for copy
+    push    ds
+    push    es
+
+    mov     ax, CD_TEMP_SEG
+    mov     ds, ax                  ; DS:SI = source (temp buffer)
+
+    mov     es, bx                  ; ES:DI = destination
+
+    ; Copy ECX bytes
+    cld
+    rep movsb
+
+    pop     es
+    pop     ds
+
+    ; Update destination offset (DI was advanced by rep movsb amount)
+    mov     [cd_dest_off], di
+
+    ; Update bytes remaining (ECX is now 0, use original count)
+    mov     eax, 2048
+    sub     eax, [cd_start_offset]
+    cmp     eax, [cd_bytes_need]
+    jbe     .sub_ok
+    mov     eax, [cd_bytes_need]
+.sub_ok:
+    sub     [cd_bytes_need], eax
+
+    ; Next CD sector starts at offset 0
+    mov     dword [cd_start_offset], 0
+    inc     dword [cd_read_sector]
+
+    jmp     .cd_read_loop
 
 .success:
     clc
@@ -325,12 +445,24 @@ read_sectors_lba:
     stc
 
 .done:
+    pop     edi
     pop     si
     pop     edx
     pop     ecx
     pop     ebx
     pop     eax
     ret
+
+; CD read temporary variables
+CD_TEMP_SEG         equ 0x1000      ; Temp buffer for CD sector reads
+cd_dest_seg:        dw 0
+cd_dest_off:        dw 0
+cd_sectors_want:    dw 0
+cd_byte_offset:     dd 0
+cd_read_sector:     dd 0
+cd_start_offset:    dd 0
+cd_bytes_need:      dd 0
+cd_sectors_read:    dd 0
 
 ; ============================================================================
 ; enter_unreal_mode - Enable 32-bit addressing in real mode
@@ -852,9 +984,11 @@ halt:
 ; ============================================================================
 
 boot_drive:         db 0
-boot_type:          db 0            ; 0 = raw, 1 = partition
+boot_type:          db 0            ; 0 = raw, 1 = partition, 2 = CD
 use_lba:            db 0
 partition_start:    dd 0
+cd_base_sector:     dd 0            ; bi_file for CD boot
+cd_sector_size:     dd 512          ; 512 for normal, 2048 for CD
 
 ; E820 data
 e820_count:         dd 0
