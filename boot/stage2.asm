@@ -801,6 +801,33 @@ load_rom:
     call    read_sectors_lba
     jc      .error
 
+    ; DEBUG: On first iteration, print first 8 bytes of staging buffer
+    cmp     dword [load_dest], ROM_DEST_ADDR
+    jne     .skip_buf_debug
+    push    si
+    push    cx
+    mov     si, msg_bufdbg
+    call    print_string
+    mov     ax, ROM_LOAD_SEG
+    mov     es, ax
+    xor     si, si
+    mov     cx, 8
+.buf_dbg_loop:
+    mov     al, [es:si]
+    call    print_hex_byte
+    mov     al, ' '
+    call    print_char
+    inc     si
+    loop    .buf_dbg_loop
+    mov     si, msg_crlf
+    call    print_string
+    ; Restore ES to 0 for pm_copy
+    xor     ax, ax
+    mov     es, ax
+    pop     cx
+    pop     si
+.skip_buf_debug:
+
     ; Copy to high memory using protected mode
     mov     esi, ROM_LOAD_SEG * 16
     mov     edi, [load_dest]
@@ -1199,6 +1226,7 @@ msg_fail:       db 'FAIL', 13, 10, 0
 msg_none:       db 'none', 13, 10, 0
 msg_halt:       db 13, 10, 'System halted.', 0
 msg_romdbg:     db '  ROM@3M: ', 0
+msg_bufdbg:     db '  BUF@30K: ', 0
 msg_crlf:       db 13, 10, 0
 
 ; ============================================================================
