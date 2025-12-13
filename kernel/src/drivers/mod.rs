@@ -11,8 +11,10 @@ pub mod mouse;
 pub mod ati_rage;
 pub mod synaptics;
 pub mod init;
+pub mod ata;
 
 // Re-export common driver types
 pub use ati_rage::AtiRage;
 pub use synaptics::SynapticsTouchpad;
 pub use init::{init_all_drivers, DriverInitResult, gpu_type, input_type};
+pub use ata::{Ata, AtaDrive, bios_drive_to_ata};
