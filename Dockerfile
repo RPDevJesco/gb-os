@@ -53,8 +53,9 @@ COPY i686-rustacean.json ./
 COPY Makefile ./
 COPY docker-build.sh /build.sh
 
-# Make build script executable and create output directory
-RUN chmod +x /build.sh && mkdir -p /output
+# Fix Windows CRLF line endings and make build script executable
+# This ensures the script works even if checked out with CRLF on Windows
+RUN sed -i 's/\r$//' /build.sh && chmod +x /build.sh && mkdir -p /output
 
 # Default command runs the build
 CMD ["/build.sh"]

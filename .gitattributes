@@ -1,0 +1,31 @@
+# Ensure consistent line endings across platforms
+# This prevents Windows CRLF line endings from breaking shell scripts in Docker
+
+# Shell scripts must use LF line endings
+*.sh text eol=lf
+
+# Assembly files should use LF
+*.asm text eol=lf
+
+# Makefiles should use LF
+Makefile text eol=lf
+
+# Dockerfile should use LF
+Dockerfile text eol=lf
+
+# Rust files should use LF
+*.rs text eol=lf
+*.toml text eol=lf
+
+# JSON files should use LF
+*.json text eol=lf
+
+# Batch files can use CRLF (Windows native)
+*.bat text eol=crlf
+
+# Binary files should not be modified
+*.bin binary
+*.img binary
+*.iso binary
+*.gb binary
+*.gbc binary
