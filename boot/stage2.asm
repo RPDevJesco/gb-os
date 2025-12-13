@@ -548,6 +548,13 @@ pm_copy:
     push    ds
     push    es
 
+    ; Save stack pointer (we'll need it to return correctly)
+    mov     [pm_saved_sp], sp
+
+    ; Ensure DS is 0 for accessing our variables
+    xor     ax, ax
+    mov     ds, ax
+
     ; Save parameters to memory (we'll need them in protected mode)
     mov     [pm_src], esi
     mov     [pm_dst], edi
@@ -618,20 +625,24 @@ pm_copy:
     mov     fs, ax
     mov     gs, ax
     mov     ss, ax
-    mov     sp, 0x7E00          ; Restore stack
 
-    ; Re-enable interrupts
-    sti
+    ; Restore saved stack pointer BEFORE popping
+    mov     sp, [pm_saved_sp]
 
+    ; Pop saved registers (now SP points to correct location)
     pop     es
     pop     ds
     popad
+
+    ; Re-enable interrupts after restoring state
+    sti
     ret
 
 ; pm_copy parameters (in low memory)
 pm_src:     dd 0
 pm_dst:     dd 0
 pm_cnt:     dd 0
+pm_saved_sp: dw 0
 
 ; Test values
 pm_test_value:  dd 0
