@@ -170,12 +170,29 @@ stage2_entry:
 
     call    enter_unreal_mode
 
+    ; Test unreal mode: write to 1MB using FS, read back, verify
+    mov     edi, 0x100000       ; 1MB
+    mov     eax, 0x12345678
+    a32 mov [fs:edi], eax       ; Write to 1MB using FS
+    a32 mov eax, [fs:edi]       ; Read back using FS
+    cmp     eax, 0x12345678
+    jne     .unreal_fail
+
     mov     si, msg_ok
     call    print_string
+    jmp     .step5
+
+.unreal_fail:
+    ; Print what we got back for debugging
+    call    print_hex_dword
+    mov     si, msg_fail
+    call    print_string
+    jmp     halt
 
     ; ------------------------------------------------------------------------
     ; Step 5: Load Kernel
     ; ------------------------------------------------------------------------
+.step5:
     mov     si, msg_kernel
     call    print_string
 
@@ -203,6 +220,25 @@ stage2_entry:
 
     mov     si, msg_ok
     call    print_string
+
+    ; DEBUG: Print first 8 bytes of ROM at 0x300000 using unreal mode
+    ; Use FS for high memory access (FS has 4GB limit)
+    mov     si, msg_romdbg
+    call    print_string
+
+    mov     ebx, ROM_DEST_ADDR      ; 0x300000
+    mov     cx, 8
+.dbg_loop:
+    a32 mov al, [fs:ebx]            ; Read byte from 0x300000+ using FS
+    call    print_hex_byte
+    mov     al, ' '
+    call    print_char
+    inc     ebx
+    loop    .dbg_loop
+
+    mov     si, msg_crlf
+    call    print_string
+
     jmp     .step7
 
 .no_rom:
@@ -403,7 +439,7 @@ read_sectors_lba:
     mov     ax, [cd_dest_seg]           ; dest segment
     mov     bx, ax                      ; save dest segment in BX
 
-    ; Set up segments for copy
+    ; Set up segments for copy - this WILL destroy unreal mode DS limit
     push    ds
     push    es
 
@@ -418,6 +454,9 @@ read_sectors_lba:
 
     pop     es
     pop     ds
+
+    ; DS is now restored to 0 (from push/pop)
+    ; FS still has 4GB limit for high memory access
 
     ; Update destination offset (DI was advanced by rep movsb amount)
     mov     [cd_dest_off], di
@@ -436,6 +475,21 @@ read_sectors_lba:
     inc     dword [cd_read_sector]
 
     jmp     .cd_read_loop
+
+.restore_unreal:
+    ; Quick unreal mode restore
+    cli
+    mov     eax, cr0
+    or      al, 1
+    mov     cr0, eax
+    mov     ax, 0x10            ; 4GB data segment from GDT
+    mov     ds, ax
+    mov     eax, cr0
+    and     al, 0xFE
+    mov     cr0, eax
+    ; DO NOT reload DS - keep the 4GB limit!
+    sti
+    ret
 
 .success:
     clc
@@ -466,43 +520,41 @@ cd_sectors_read:    dd 0
 
 ; ============================================================================
 ; enter_unreal_mode - Enable 32-bit addressing in real mode
+; Uses FS for 4GB access (DS/ES may be reloaded by other code)
 ; ============================================================================
 
 enter_unreal_mode:
-    push    eax
-    push    ds
-
     cli
 
     ; Load GDT
     lgdt    [gdt_descriptor]
 
-    ; Enter protected mode briefly
+    ; Enter protected mode
     mov     eax, cr0
     or      al, 1
     mov     cr0, eax
 
-    ; Load data segment with 4GB limit
+    ; Load FS and GS with 4GB limit (selector 0x10)
+    ; These segments are rarely touched by other code
     mov     ax, 0x10
-    mov     ds, ax
-    mov     es, ax
     mov     fs, ax
     mov     gs, ax
+    ; Also load DS/ES for compatibility
+    mov     ds, ax
+    mov     es, ax
 
     ; Return to real mode
     mov     eax, cr0
     and     al, 0xFE
     mov     cr0, eax
 
-    ; Restore real mode segments (but keep 32-bit limits!)
+    ; Restore DS/ES to 0 for normal code
+    ; FS/GS retain 4GB limit since we don't touch them
     xor     ax, ax
     mov     ds, ax
     mov     es, ax
 
     sti
-
-    pop     ds
-    pop     eax
     ret
 
 ; ============================================================================
@@ -541,6 +593,7 @@ load_kernel:
     call    read_sectors_lba
     jc      .error
 
+    ; FS still has 4GB limit from enter_unreal_mode (set up at boot)
     ; Copy from temp buffer to high memory using unreal mode
     mov     esi, KERNEL_LOAD_SEG * 16   ; Source: 0x20000
     mov     edi, [load_dest]             ; Dest: 1MB+
@@ -578,7 +631,8 @@ load_kernel:
 
 ; ============================================================================
 ; copy_high - Copy data to address above 1MB using unreal mode
-; Input: ESI = source, EDI = dest, ECX = dword count
+; Input: ESI = source (physical), EDI = dest (physical), ECX = dword count
+; Uses FS segment which has 4GB limit
 ; ============================================================================
 
 copy_high:
@@ -591,9 +645,9 @@ copy_high:
     test    ecx, ecx
     jz      .done
 
-    ; Use 32-bit addressing (works because of unreal mode)
-    a32 mov eax, [esi]
-    a32 mov [edi], eax
+    ; Use FS for 32-bit addressing (FS has 4GB limit from unreal mode)
+    a32 mov eax, [fs:esi]
+    a32 mov [fs:edi], eax
     add     esi, 4
     add     edi, 4
     dec     ecx
@@ -685,6 +739,23 @@ load_rom:
     call    read_sectors_lba
     jc      .error
 
+    ; DEBUG: Print first 2 bytes from temp buffer before copy_high
+    ; Read values from temp buffer using ES
+    mov     al, [es:0]          ; First byte at ROM_LOAD_SEG:0
+    mov     ah, [es:1]          ; Second byte
+    push    ax                  ; Save both bytes
+
+    ; Print them (DS is still 0, so print functions work)
+    pop     ax
+    push    ax
+    call    print_hex_byte      ; Print first byte (in AL)
+    pop     ax
+    mov     al, ah
+    call    print_hex_byte      ; Print second byte
+    mov     al, ' '
+    call    print_char
+
+    ; FS still has 4GB limit (never touched by CD reads)
     ; Copy to high memory
     mov     esi, ROM_LOAD_SEG * 16
     mov     edi, [load_dest]
@@ -829,13 +900,14 @@ verify_a20:
     push    di
     push    si
 
+    ; Test using 0x600/0x610 to avoid boot_info at 0x500
     xor     ax, ax
     mov     es, ax
-    mov     di, 0x0500
+    mov     di, 0x0600
 
     mov     ax, 0xFFFF
     mov     ds, ax
-    mov     si, 0x0510
+    mov     si, 0x0610
 
     mov     byte [es:di], 0x00
     mov     byte [ds:si], 0xFF
@@ -972,6 +1044,46 @@ print_char:
     pop     ax
     ret
 
+; Print AL as 2 hex digits
+print_hex_byte:
+    push    ax
+    push    cx
+    mov     cl, al
+    shr     al, 4
+    call    .hex_digit
+    mov     al, cl
+    and     al, 0x0F
+    call    .hex_digit
+    pop     cx
+    pop     ax
+    ret
+.hex_digit:
+    add     al, '0'
+    cmp     al, '9'
+    jbe     .print
+    add     al, 7
+.print:
+    call    print_char
+    ret
+
+; Print EAX as 8 hex digits
+print_hex_dword:
+    push    eax
+    shr     eax, 16
+    call    print_hex_word
+    pop     eax
+    call    print_hex_word
+    ret
+
+; Print AX as 4 hex digits
+print_hex_word:
+    push    ax
+    mov     al, ah
+    call    print_hex_byte
+    pop     ax
+    call    print_hex_byte
+    ret
+
 halt:
     mov     si, msg_halt
     call    print_string
@@ -1041,6 +1153,8 @@ msg_ok:         db 'OK', 13, 10, 0
 msg_fail:       db 'FAIL', 13, 10, 0
 msg_none:       db 'none', 13, 10, 0
 msg_halt:       db 13, 10, 'System halted.', 0
+msg_romdbg:     db '  ROM@3M: ', 0
+msg_crlf:       db 13, 10, 0
 
 ; ============================================================================
 ; GDT
