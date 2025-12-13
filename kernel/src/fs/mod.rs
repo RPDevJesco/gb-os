@@ -4,9 +4,6 @@
 //! Primary filesystem is exFAT for USB compatibility.
 
 pub mod exfat;
-pub mod fat16;
-
-pub use fat16::{Fat16, RomFile, find_roms_partition};
 
 /// Maximum path length
 pub const MAX_PATH: usize = 256;

@@ -7,13 +7,6 @@
 #   docker build -t rustacean-builder .
 #   docker run --rm -v $(pwd)/output:/output rustacean-builder
 #   docker run --rm -v $(pwd)/output:/output rustacean-builder /build.sh --gameboy
-#
-# Output files now include individual components:
-#   - boot.bin             Stage 1 bootloader
-#   - stage2.bin           Stage 2 bootloader (normal mode)
-#   - stage2-gameboy.bin   Stage 2 bootloader (GameBoy mode)
-#   - kernel.bin           Kernel binary
-#   - *.img, *.iso         Bootable disk images
 
 FROM ubuntu:24.04
 

@@ -17,35 +17,10 @@
 //! 0x20    4     ROM address (0 if no ROM)
 //! 0x24    4     ROM size in bytes
 //! 0x28    32    ROM title (null-terminated)
-//! 0x48    4     Boot type (0=raw, 1=partition)
-//! 0x4C    4     Boot drive
-//! 0x50    4     Partition start LBA (if boot_type=1)
 //! ```
 
 /// Magic value: 'GBOY' in little-endian
 pub const BOOT_MAGIC: u32 = 0x594F4247;
-
-/// Default boot info address
-pub const BOOT_INFO_ADDR: u32 = 0x500;
-
-/// Boot types
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u32)]
-pub enum BootType {
-    /// Booting from raw media (floppy, CD, USB)
-    Raw = 0,
-    /// Booting from a partition (installed on hard disk)
-    Partition = 1,
-}
-
-impl From<u32> for BootType {
-    fn from(value: u32) -> Self {
-        match value {
-            1 => BootType::Partition,
-            _ => BootType::Raw,
-        }
-    }
-}
 
 /// Boot information passed from bootloader to kernel
 #[derive(Debug, Clone, Copy)]
@@ -71,12 +46,6 @@ pub struct BootInfo {
     pub rom_addr: u32,
     /// ROM size in bytes
     pub rom_size: u32,
-    /// Boot type (raw or partition)
-    pub boot_type: BootType,
-    /// Boot drive (BIOS drive number)
-    pub boot_drive: u32,
-    /// Partition start LBA (if booting from partition)
-    pub partition_start: u32,
 }
 
 /// Raw boot info structure as stored in memory
@@ -93,9 +62,6 @@ pub struct RawBootInfo {
     pub rom_addr: u32,
     pub rom_size: u32,
     pub rom_title: [u8; 32],
-    pub boot_type: u32,
-    pub boot_drive: u32,
-    pub partition_start: u32,
 }
 
 impl BootInfo {
@@ -119,9 +85,6 @@ impl BootInfo {
             pitch: raw.pitch,
             rom_addr: raw.rom_addr,
             rom_size: raw.rom_size,
-            boot_type: BootType::from(raw.boot_type),
-            boot_drive: raw.boot_drive,
-            partition_start: raw.partition_start,
         }
     }
 
@@ -138,11 +101,6 @@ impl BootInfo {
     /// Check if a ROM is loaded
     pub fn has_rom(&self) -> bool {
         self.rom_addr != 0 && self.rom_size > 0
-    }
-
-    /// Check if booting from installed partition
-    pub fn is_partition_boot(&self) -> bool {
-        self.boot_type == BootType::Partition
     }
 
     /// Get ROM as a slice
@@ -163,7 +121,7 @@ impl BootInfo {
 
     /// Get ROM title as string
     pub unsafe fn rom_title(&self) -> &str {
-        let raw = &*(BOOT_INFO_ADDR as *const RawBootInfo);
+        let raw = &*(0x500 as *const RawBootInfo);
         let title_bytes = &raw.rom_title;
 
         // Find null terminator
@@ -174,24 +132,6 @@ impl BootInfo {
         core::str::from_utf8_unchecked(&title_bytes[..len])
     }
 }
-
-/// Get boot info from default address
-///
-/// # Safety
-///
-/// Must be called after stage2 bootloader has set up the boot info structure.
-pub unsafe fn get_boot_info() -> Option<BootInfo> {
-    let info = BootInfo::from_ptr(BOOT_INFO_ADDR as *const u8);
-    if info.verify_magic() {
-        Some(info)
-    } else {
-        None
-    }
-}
-
-// ============================================================================
-// E820 Memory Map Types
-// ============================================================================
 
 /// E820 memory region types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

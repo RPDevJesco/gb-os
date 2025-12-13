@@ -19,19 +19,12 @@ mod event_chains;
 // GUI module (needed by drivers/init.rs even if not used)
 mod gui;
 
-// Filesystem support (for ROM partition)
-mod fs;
-
-// User interface (ROM menu)
-mod ui;
-
 // GameBoy emulator
 mod gameboy;
 
-use boot_info::{BootInfo, BootType};
+use boot_info::BootInfo;
 use arch::x86::{gdt, idt};
 use core::arch::global_asm;
-use alloc::vec::Vec;
 
 // ============================================================================
 // Panic Handler
@@ -112,126 +105,10 @@ global_asm!(
 
 /// Draw a colored bar for debug progress
 #[inline(always)]
-#[allow(dead_code)]
 unsafe fn draw_bar(x: isize, row: isize, color: u8, width: isize) {
     let vga = 0xA0000 as *mut u8;
     for i in 0..width {
         core::ptr::write_volatile(vga.offset(row + x + i), color);
-    }
-}
-
-// ============================================================================
-// ROM Loading
-// ============================================================================
-
-/// ROM address for dynamic loading (3MB mark)
-const ROM_LOAD_ADDRESS: u32 = 0x300000;
-
-/// Try to load ROM from ROMS partition
-fn load_rom_from_partition(boot_info: &BootInfo) -> Option<(u32, u32)> {
-    // Only works for partition boot
-    if boot_info.boot_type != BootType::Partition {
-        return None;
-    }
-
-    // Get ATA drive from BIOS drive number
-    let ata_drive = drivers::bios_drive_to_ata(boot_info.boot_drive as u8)?;
-
-    // Create ATA driver
-    let mut ata = drivers::Ata::new(ata_drive);
-
-    // Find ROMS partition (partition 2)
-    let roms_partition_start = match fs::find_roms_partition(&mut ata) {
-        Ok(lba) => lba,
-        Err(_) => return None,
-    };
-
-    // Open FAT16 filesystem on ROMS partition
-    let mut fat = match fs::Fat16::new(ata_drive, roms_partition_start) {
-        Ok(f) => f,
-        Err(_) => return None,
-    };
-
-    // List ROM files
-    let roms = match fat.list_roms() {
-        Ok(r) => r,
-        Err(_) => return None,
-    };
-
-    if roms.is_empty() {
-        // No ROMs - show message and return None
-        ui::show_rom_menu(roms);
-        return None;
-    }
-
-    // Show ROM selection menu
-    let selected_idx = ui::show_rom_menu(roms.clone())?;
-
-    // Get selected ROM
-    let selected_rom = &roms[selected_idx];
-
-    // Load ROM to memory
-    unsafe {
-        let dest = ROM_LOAD_ADDRESS as *mut u8;
-        match fat.load_rom(selected_rom, dest) {
-            Ok(size) => Some((ROM_LOAD_ADDRESS, size)),
-            Err(_) => None,
-        }
-    }
-}
-
-/// Clear the screen to black
-fn clear_screen() {
-    unsafe {
-        let vga = 0xA0000 as *mut u8;
-        for i in 0..(320 * 200) {
-            core::ptr::write_volatile(vga.add(i), 0x00);
-        }
-    }
-}
-
-// ============================================================================
-// VGA Blitting
-// ============================================================================
-
-/// Convert RGB to VGA palette index (grayscale approximation)
-/// VGA palette: 16-31 are grayscale
-#[inline(always)]
-fn rgb_to_vga_gray(r: u8, g: u8, b: u8) -> u8 {
-    // Luminance formula: Y = 0.299R + 0.587G + 0.114B
-    // Simplified: Y = (R + 2*G + B) / 4
-    let lum = ((r as u16 + 2 * g as u16 + b as u16) / 4) as u8;
-    // Map to 16 grayscale levels (palette 16-31)
-    16 + (lum >> 4)
-}
-
-/// Blit Game Boy framebuffer to VGA
-/// GB: 160x144 RGB -> VGA: 320x200 centered with grayscale conversion
-fn blit_gb_to_vga(gpu_data: &[u8]) {
-    const GB_WIDTH: usize = 160;
-    const GB_HEIGHT: usize = 144;
-    const VGA_WIDTH: usize = 320;
-
-    // Center the GB screen on VGA (320-160)/2 = 80, (200-144)/2 = 28
-    const OFFSET_X: usize = 80;
-    const OFFSET_Y: usize = 28;
-
-    let vga = 0xA0000 as *mut u8;
-
-    for y in 0..GB_HEIGHT {
-        for x in 0..GB_WIDTH {
-            let src_idx = (y * GB_WIDTH + x) * 3;
-            let r = gpu_data[src_idx];
-            let g = gpu_data[src_idx + 1];
-            let b = gpu_data[src_idx + 2];
-
-            let color = rgb_to_vga_gray(r, g, b);
-
-            let dst_idx = (OFFSET_Y + y) * VGA_WIDTH + OFFSET_X + x;
-            unsafe {
-                core::ptr::write_volatile(vga.add(dst_idx), color);
-            }
-        }
     }
 }
 
@@ -241,60 +118,201 @@ fn blit_gb_to_vga(gpu_data: &[u8]) {
 
 #[no_mangle]
 extern "C" fn kernel_main(_boot_info_ptr: u32) -> ! {
-    // Initialize GDT and IDT
+    const ROW: isize = 320 * 10;  // Row 10 for progress
+
+    // Stage M1: In kernel_main - MAGENTA
+    unsafe { draw_bar(0, ROW, 0x05, 20); }
+
+    // Parse boot info from fixed address 0x500
+    let boot_info = unsafe { BootInfo::from_ptr(0x500 as *const u8) };
+
+    // Stage M2: Parsed - GREEN
+    unsafe { draw_bar(20, ROW, 0x02, 20); }
+
+    // Stage M3: Skip magic verify (we know it's correct) - YELLOW
+    unsafe { draw_bar(40, ROW, 0x0E, 20); }
+
+    // Initialize GDT
     gdt::init();
+
+    // Stage M4: GDT OK - LIGHT CYAN
+    unsafe { draw_bar(60, ROW, 0x0B, 20); }
+
+    // Initialize IDT
     idt::init();
 
-    // Initialize heap
-    unsafe { mm::heap::init(); }
+    // Stage M5: IDT OK - CYAN
+    unsafe { draw_bar(80, ROW, 0x03, 20); }
+
+    // Initialize memory manager
+    mm::init(boot_info.e820_map_addr);
+
+    // Stage M6: Memory OK - LIGHT GREEN
+    unsafe { draw_bar(100, ROW, 0x0A, 20); }
+
+    // Enable interrupts
+    unsafe { core::arch::asm!("sti"); }
+
+    // Stage M7: All init done - WHITE
+    unsafe { draw_bar(120, ROW, 0x0F, 40); }
+
+    // =========================================================================
+    // Initialize GameBoy Emulator
+    // =========================================================================
+
+    // Clear screen first (dark green/gray like original GB)
+    clear_screen(0x00);
+
+    // Draw Game Boy border
+    draw_gb_border();
+
+    // Stage M8: Display ready - BRIGHT WHITE bar
+    unsafe { draw_bar(160, ROW, 0x0F, 40); }
+
+    // Try to load and run the emulator
+    run_gameboy_emulator();
+}
+
+// ============================================================================
+// VGA Mode 13h Display Functions
+// ============================================================================
+
+/// Clear the entire VGA screen
+fn clear_screen(color: u8) {
+    unsafe {
+        let vga = 0xA0000 as *mut u8;
+        for i in 0..(320 * 200) {
+            core::ptr::write_volatile(vga.add(i), color);
+        }
+    }
+}
+
+/// Draw the Game Boy screen border
+/// GB is 160x144, centered in 320x200: x=80, y=28
+fn draw_gb_border() {
+    const GB_WIDTH: isize = 160;
+    const GB_HEIGHT: isize = 144;
+    const START_X: isize = 80;
+    const START_Y: isize = 28;
+    const BORDER: isize = 4;
+    const BORDER_COLOR: u8 = 0x08;  // Dark gray
+
+    unsafe {
+        let vga = 0xA0000 as *mut u8;
+
+        // Top border
+        for x in (START_X - BORDER)..(START_X + GB_WIDTH + BORDER) {
+            for y_off in 0..BORDER {
+                let offset = (START_Y - BORDER + y_off) * 320 + x;
+                if offset >= 0 && offset < 64000 {
+                    core::ptr::write_volatile(vga.offset(offset), BORDER_COLOR);
+                }
+            }
+        }
+
+        // Bottom border
+        for x in (START_X - BORDER)..(START_X + GB_WIDTH + BORDER) {
+            for y_off in 0..BORDER {
+                let offset = (START_Y + GB_HEIGHT + y_off) * 320 + x;
+                if offset >= 0 && offset < 64000 {
+                    core::ptr::write_volatile(vga.offset(offset), BORDER_COLOR);
+                }
+            }
+        }
+
+        // Left border
+        for y in (START_Y - BORDER)..(START_Y + GB_HEIGHT + BORDER) {
+            for x_off in 0..BORDER {
+                let offset = y * 320 + START_X - BORDER + x_off;
+                if offset >= 0 && offset < 64000 {
+                    core::ptr::write_volatile(vga.offset(offset), BORDER_COLOR);
+                }
+            }
+        }
+
+        // Right border
+        for y in (START_Y - BORDER)..(START_Y + GB_HEIGHT + BORDER) {
+            for x_off in 0..BORDER {
+                let offset = y * 320 + START_X + GB_WIDTH + x_off;
+                if offset >= 0 && offset < 64000 {
+                    core::ptr::write_volatile(vga.offset(offset), BORDER_COLOR);
+                }
+            }
+        }
+    }
+}
+
+/// Blit Game Boy framebuffer (160x144 RGB) to VGA mode 13h (320x200)
+///
+/// The GB GPU outputs RGB format (3 bytes per pixel).
+/// We convert to VGA palette indices using grayscale approximation.
+///
+/// VGA mode 13h default palette has grayscale at indices 16-31.
+fn blit_gb_to_vga(gb_data: &[u8]) {
+    const START_X: isize = 80;
+    const START_Y: isize = 28;
+    const SCREEN_W: usize = 160;
+    const SCREEN_H: usize = 144;
+
+    unsafe {
+        let vga = 0xA0000 as *mut u8;
+
+        for y in 0..SCREEN_H {
+            for x in 0..SCREEN_W {
+                // RGB format: 3 bytes per pixel
+                let src_idx = (y * SCREEN_W + x) * 3;
+
+                if src_idx + 2 < gb_data.len() {
+                    let r = gb_data[src_idx] as u16;
+                    let g = gb_data[src_idx + 1] as u16;
+                    let b = gb_data[src_idx + 2] as u16;
+
+                    // Convert RGB to grayscale using luminance formula
+                    // Y = 0.299*R + 0.587*G + 0.114*B (approximated with integers)
+                    let gray = ((r * 77 + g * 150 + b * 29) >> 8) as u8;
+
+                    // Map to VGA grayscale palette (indices 16-31)
+                    // gray is 0-255, we want 16-31 (16 levels)
+                    let vga_color = 16 + (gray >> 4);
+
+                    let offset = (START_Y as usize + y) * 320 + START_X as usize + x;
+                    core::ptr::write_volatile(vga.add(offset), vga_color);
+                }
+            }
+        }
+    }
+}
+
+// ============================================================================
+// GameBoy Emulator Integration
+// ============================================================================
+
+fn run_gameboy_emulator() -> ! {
+    use alloc::vec::Vec;
 
     // Initialize PIT for accurate timing (1000 Hz = 1ms per tick)
     arch::x86::pit::set_frequency(1000);
 
-    // Get boot info
-    let boot_info = unsafe {
-        boot_info::get_boot_info().unwrap_or_else(|| {
-            // Create a minimal boot info if parsing fails
-            show_boot_error();
-            loop { unsafe { core::arch::asm!("hlt"); } }
-        })
-    };
+    // Check if ROM was loaded by bootloader
+    let boot_info = unsafe { BootInfo::from_ptr(0x500 as *const u8) };
 
-    // Determine ROM source
-    let (rom_addr, rom_size): (u32, u32) = if boot_info.has_rom() {
-        // ROM was embedded by bootloader
-        (boot_info.rom_addr, boot_info.rom_size)
-    } else if boot_info.boot_type == BootType::Partition {
-        // Try to load from ROMS partition
-        match load_rom_from_partition(&boot_info) {
-            Some((addr, size)) => {
-                // Clear screen after menu
-                clear_screen();
-                (addr, size)
-            }
-            None => {
-                // No ROM available
-                show_no_rom_error();
-                loop { unsafe { core::arch::asm!("hlt"); } }
-            }
-        }
+    let rom_data: Vec<u8> = if boot_info.rom_addr != 0 && boot_info.rom_size > 0 {
+        // ROM loaded by bootloader
+        let rom_slice = unsafe {
+            core::slice::from_raw_parts(
+                boot_info.rom_addr as *const u8,
+                boot_info.rom_size as usize
+            )
+        };
+        rom_slice.to_vec()
     } else {
-        // Raw boot without ROM
+        // No ROM loaded - show error and halt
         show_no_rom_error();
         loop { unsafe { core::arch::asm!("hlt"); } }
     };
 
-    // Load ROM data into Vec
-    let rom_data: Vec<u8> = unsafe {
-        let rom_slice = core::slice::from_raw_parts(
-            rom_addr as *const u8,
-            rom_size as usize
-        );
-        rom_slice.to_vec()
-    };
-
     // Create emulator
-    let mut device = match gameboy::Device::new_cgb(rom_data, false) {
+    let mut device = match gameboy::Device::new(rom_data, false) {
         Ok(d) => d,
         Err(_e) => {
             show_emulator_error();
@@ -376,21 +394,6 @@ fn show_emulator_error() {
         for x in 100..220isize {
             let offset = START_Y * 320 + x;
             core::ptr::write_volatile(vga.offset(offset), 0x0E);  // Yellow
-        }
-    }
-}
-
-/// Show boot info error
-fn show_boot_error() {
-    const START_Y: isize = 80;
-
-    unsafe {
-        let vga = 0xA0000 as *mut u8;
-
-        // Draw magenta bar to indicate boot info error
-        for x in 100..220isize {
-            let offset = START_Y * 320 + x;
-            core::ptr::write_volatile(vga.offset(offset), 0x05);  // Magenta
         }
     }
 }
