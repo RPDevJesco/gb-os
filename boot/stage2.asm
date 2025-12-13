@@ -477,18 +477,8 @@ read_sectors_lba:
     jmp     .cd_read_loop
 
 .restore_unreal:
-    ; Quick unreal mode restore
-    cli
-    mov     eax, cr0
-    or      al, 1
-    mov     cr0, eax
-    mov     ax, 0x10            ; 4GB data segment from GDT
-    mov     ds, ax
-    mov     eax, cr0
-    and     al, 0xFE
-    mov     cr0, eax
-    ; DO NOT reload DS - keep the 4GB limit!
-    sti
+    ; Quick unreal mode restore - restores FS for copy_high
+    call    restore_unreal_fs
     ret
 
 .success:
@@ -593,7 +583,9 @@ load_kernel:
     call    read_sectors_lba
     jc      .error
 
-    ; FS still has 4GB limit from enter_unreal_mode (set up at boot)
+    ; Restore FS 4GB limit - BIOS int 13h may have clobbered it
+    call    restore_unreal_fs
+
     ; Copy from temp buffer to high memory using unreal mode
     mov     esi, KERNEL_LOAD_SEG * 16   ; Source: 0x20000
     mov     edi, [load_dest]             ; Dest: 1MB+
@@ -657,6 +649,36 @@ copy_high:
     pop     edi
     pop     esi
     pop     ecx
+    pop     eax
+    ret
+
+; ============================================================================
+; restore_unreal_fs - Restore FS segment with 4GB limit after BIOS interrupts
+; BIOS int 13h can clobber segment registers, breaking unreal mode.
+; This function re-establishes FS with a 4GB limit for copy_high to work.
+; ============================================================================
+
+restore_unreal_fs:
+    push    eax
+
+    cli
+
+    ; Enter protected mode briefly
+    mov     eax, cr0
+    or      al, 1
+    mov     cr0, eax
+
+    ; Load FS with 4GB data segment selector
+    mov     ax, 0x10
+    mov     fs, ax
+
+    ; Return to real mode - FS retains 4GB limit in hidden descriptor cache
+    mov     eax, cr0
+    and     al, 0xFE
+    mov     cr0, eax
+
+    sti
+
     pop     eax
     ret
 
@@ -755,7 +777,9 @@ load_rom:
     mov     al, ' '
     call    print_char
 
-    ; FS still has 4GB limit (never touched by CD reads)
+    ; Restore FS 4GB limit - BIOS int 13h may have clobbered it
+    call    restore_unreal_fs
+
     ; Copy to high memory
     mov     esi, ROM_LOAD_SEG * 16
     mov     edi, [load_dest]
