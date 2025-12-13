@@ -196,13 +196,44 @@ stage2_entry:
     ; Compare
     mov     eax, [pm_test_result]
     cmp     eax, 0x12345678
-    jne     .pm_fail
+    jne     .pm_fail_1mb
+
+    mov     si, msg_ok
+    call    print_string
+
+    ; Also test 3MB specifically (where ROM will be loaded)
+    mov     si, msg_pm3mb
+    call    print_string
+
+    mov     dword [pm_test_value], 0xDEADBEEF
+    mov     esi, pm_test_value          ; Source in low memory
+    mov     edi, 0x300000               ; Destination at 3MB
+    mov     ecx, 1                      ; 1 dword
+    call    pm_copy
+
+    ; Read back and verify
+    mov     esi, 0x300000               ; Source at 3MB
+    mov     edi, pm_test_result         ; Destination in low memory
+    mov     ecx, 1                      ; 1 dword
+    call    pm_copy
+
+    ; Compare
+    mov     eax, [pm_test_result]
+    cmp     eax, 0xDEADBEEF
+    jne     .pm_fail_3mb
 
     mov     si, msg_ok
     call    print_string
     jmp     .step5
 
-.pm_fail:
+.pm_fail_1mb:
+    ; Print what we got back for debugging
+    call    print_hex_dword
+    mov     si, msg_fail
+    call    print_string
+    jmp     halt
+
+.pm_fail_3mb:
     ; Print what we got back for debugging
     call    print_hex_dword
     mov     si, msg_fail
@@ -269,6 +300,14 @@ stage2_entry:
 .no_rom:
     mov     si, msg_none
     call    print_string
+
+    ; ------------------------------------------------------------------------
+    ; DEBUG: Pause so user can read diagnostic output before kernel draws
+    ; ------------------------------------------------------------------------
+    mov     si, msg_pause
+    call    print_string
+    xor     ah, ah
+    int     0x16                        ; Wait for keypress
 
     ; ------------------------------------------------------------------------
     ; Step 7: Build boot info structure and switch to protected mode
@@ -1218,6 +1257,7 @@ msg_e820:       db '  E820 memory map... ', 0
 msg_a20:        db '  A20 gate... ', 0
 msg_vga:        db '  VGA mode 13h... ', 0
 msg_pmtest:     db '  PM copy test... ', 0
+msg_pm3mb:      db '  PM 3MB test... ', 0
 msg_kernel:     db '  Loading kernel', 0
 msg_rom:        db 13, 10, '  Loading ROM', 0
 msg_boot:       db 13, 10, '  Starting kernel...', 13, 10, 0
@@ -1227,6 +1267,7 @@ msg_none:       db 'none', 13, 10, 0
 msg_halt:       db 13, 10, 'System halted.', 0
 msg_romdbg:     db '  ROM@3M: ', 0
 msg_bufdbg:     db '  BUF@30K: ', 0
+msg_pause:      db 13, 10, 'Press any key...', 0
 msg_crlf:       db 13, 10, 0
 
 ; ============================================================================
