@@ -12,6 +12,8 @@ pub mod ati_rage;
 pub mod synaptics;
 pub mod init;
 
+pub mod ata;
+
 // Re-export common driver types
 pub use ati_rage::AtiRage;
 pub use synaptics::SynapticsTouchpad;

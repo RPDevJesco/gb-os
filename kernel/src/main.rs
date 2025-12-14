@@ -19,6 +19,8 @@ mod event_chains;
 // GUI module (needed by drivers/init.rs even if not used)
 mod gui;
 
+mod fs;
+
 // GameBoy emulator
 mod gameboy;
 
@@ -379,26 +381,27 @@ fn run_gameboy_emulator() -> ! {
 /// 3. List ROM files (.gb, .gbc) in the root directory
 /// 4. Load the first ROM found (or show a selection menu in the future)
 fn try_load_rom_from_partition() -> Option<alloc::vec::Vec<u8>> {
+    use alloc::vec::Vec;
     use crate::drivers::ata::{Ata, AtaDrive};
-    use crate::fs::fat16::{Fat16, find_roms_partition};
+    use crate::fs::fat16::{Fat16, RomFile, find_roms_partition};
 
     // Try primary master drive first (most common for hard disks)
     let mut ata = Ata::new(AtaDrive::PrimaryMaster);
 
     // Find the ROMS partition (partition 2 with FAT16 type)
-    let partition_lba = match find_roms_partition(&mut ata) {
+    let partition_lba: u32 = match find_roms_partition(&mut ata) {
         Ok(lba) => lba,
         Err(_) => return None,
     };
 
     // Mount the FAT16 filesystem
-    let mut fat16 = match Fat16::new(AtaDrive::PrimaryMaster, partition_lba) {
+    let mut fat16: Fat16 = match Fat16::new(AtaDrive::PrimaryMaster, partition_lba) {
         Ok(fs) => fs,
         Err(_) => return None,
     };
 
     // List ROM files
-    let roms = match fat16.list_roms() {
+    let roms: Vec<RomFile> = match fat16.list_roms() {
         Ok(list) => list,
         Err(_) => return None,
     };
@@ -410,10 +413,10 @@ fn try_load_rom_from_partition() -> Option<alloc::vec::Vec<u8>> {
 
     // Load the first ROM found
     // In the future, this could show a selection menu
-    let rom = &roms[0];
+    let rom: &RomFile = &roms[0];
 
     // Allocate buffer for ROM data
-    let mut rom_data = alloc::vec![0u8; rom.size as usize];
+    let mut rom_data: Vec<u8> = alloc::vec![0u8; rom.size as usize];
 
     // Load the ROM into the buffer
     unsafe {
