@@ -120,6 +120,15 @@ start:
     mov     si, msg_ok
     call    print_string
 
+    ; Debug: print first 2 bytes at stage2 location as hex
+    mov     al, [STAGE2_OFFSET]
+    call    print_hex_byte
+    mov     al, [STAGE2_OFFSET + 1]
+    call    print_hex_byte
+    mov     al, ' '
+    mov     ah, 0x0E
+    int     0x10
+
     ; Verify stage 2 magic
     cmp     word [STAGE2_OFFSET], 0x5247  ; 'GR' for GameBoy Retro
     jne     stage2_error
@@ -162,6 +171,31 @@ print_string:
     jmp     .loop
 .done:
     popa
+    ret
+
+; Print AL as 2 hex digits
+print_hex_byte:
+    push    ax
+    push    bx
+    mov     bl, al              ; Save original value
+    shr     al, 4               ; High nibble
+    call    .print_nibble
+    mov     al, bl              ; Low nibble
+    and     al, 0x0F
+    call    .print_nibble
+    pop     bx
+    pop     ax
+    ret
+.print_nibble:
+    cmp     al, 10
+    jb      .digit
+    add     al, 'A' - 10
+    jmp     .print
+.digit:
+    add     al, '0'
+.print:
+    mov     ah, 0x0E
+    int     0x10
     ret
 
 ; ============================================================================
