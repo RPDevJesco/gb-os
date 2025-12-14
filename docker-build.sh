@@ -149,19 +149,19 @@ if [ "$BUILD_NORMAL" = "yes" ]; then
     dd if=build/kernel.bin of=build/rustacean.img bs=512 seek=33 conv=notrunc 2>/dev/null
     echo "      rustacean.img: $(stat -c%s build/rustacean.img) bytes"
 
-    echo "      Creating rustacean.iso (El Torito no-emulation)..."
+    echo "      Creating rustacean.iso (El Torito hard-disk emulation)..."
     mkdir -p build/iso
     cp build/rustacean.img build/iso/
-    # Use El Torito no-emulation mode for CD boot (no floppy emulation)
+    # Use El Torito hard-disk emulation for CD boot
+    # This maps the boot image as a virtual hard disk, allowing LBA reads to work
+    # while avoiding floppy geometry restrictions
     genisoimage -o build/rustacean.iso \
-        -no-emul-boot \
-        -boot-load-size 4 \
+        -hard-disk-boot \
         -b rustacean.img \
         -V "RUSTACEAN_OS" \
         build/iso/ 2>/dev/null || \
     xorriso -as mkisofs -o build/rustacean.iso \
-        -no-emul-boot \
-        -boot-load-size 4 \
+        -hard-disk-boot \
         -b rustacean.img \
         -V "RUSTACEAN_OS" \
         build/iso/ 2>/dev/null
@@ -226,19 +226,19 @@ if [ "$BUILD_GAMEBOY" = "yes" ]; then
 
     echo "      gameboy-system.img: $(stat -c%s build/gameboy-system.img) bytes"
 
-    echo "      Creating gameboy-system.iso (El Torito no-emulation)..."
+    echo "      Creating gameboy-system.iso (El Torito hard-disk emulation)..."
     mkdir -p build/iso
     cp build/gameboy-system.img build/iso/
-    # Use El Torito no-emulation mode for CD boot (no floppy emulation)
+    # Use El Torito hard-disk emulation for CD boot
+    # This maps the boot image as a virtual hard disk, allowing LBA reads to work
+    # while avoiding floppy geometry restrictions
     genisoimage -o build/gameboy-system.iso \
-        -no-emul-boot \
-        -boot-load-size 4 \
+        -hard-disk-boot \
         -b gameboy-system.img \
         -V "GAMEBOY_OS" \
         build/iso/ 2>/dev/null || \
     xorriso -as mkisofs -o build/gameboy-system.iso \
-        -no-emul-boot \
-        -boot-load-size 4 \
+        -hard-disk-boot \
         -b gameboy-system.img \
         -V "GAMEBOY_OS" \
         build/iso/ 2>/dev/null
