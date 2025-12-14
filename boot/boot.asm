@@ -49,6 +49,17 @@ start:
     mov     si, msg_boot
     call    print_string
 
+    ; Debug: print boot drive number (DL) as hex
+    ; 0x00-0x7F = floppy, 0x80+ = hard disk, 0xE0+ often = CD-ROM
+    mov     al, 'D'
+    mov     ah, 0x0E
+    int     0x10
+    mov     al, [BOOT_DRIVE_ADDR]
+    call    print_hex_byte
+    mov     al, ' '
+    mov     ah, 0x0E
+    int     0x10
+
     ; Reset disk system first (improves compatibility)
     xor     ax, ax
     mov     dl, [BOOT_DRIVE_ADDR]
