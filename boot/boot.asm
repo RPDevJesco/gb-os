@@ -49,8 +49,13 @@ start:
     mov     si, msg_boot
     call    print_string
 
+    ; Reset disk system first (improves compatibility)
+    xor     ax, ax
+    mov     dl, [BOOT_DRIVE_ADDR]
+    int     0x13
+
     ; Check for LBA extensions support
-    mov     ah, 0x41
+    mov     ax, 0x4100              ; AH=41h, AL=0 (clean register)
     mov     bx, 0x55AA
     mov     dl, [BOOT_DRIVE_ADDR]
     int     0x13
@@ -65,20 +70,52 @@ start:
 
 .load_stage2:
     ; Load stage 2 using LBA extensions
-    ; Set up DAP (Disk Address Packet)
-    mov     word [dap_sectors], STAGE2_SECTORS
-    mov     word [dap_offset], STAGE2_OFFSET
+    ; Read in small chunks (4 sectors at a time) for better compatibility
+    ; Some BIOSes hang on large multi-sector reads
+    mov     word [cur_lba], 1           ; Start at LBA 1 (after boot sector)
+    mov     word [sectors_rem], STAGE2_SECTORS
+    mov     word [dest_offset], STAGE2_OFFSET
+
+.read_loop:
+    cmp     word [sectors_rem], 0
+    je      .read_done
+
+    ; Calculate sectors to read this iteration (max 4)
+    mov     ax, [sectors_rem]
+    cmp     ax, 4
+    jbe     .use_remaining
+    mov     ax, 4
+.use_remaining:
+    mov     [dap_sectors], ax
+
+    ; Set up DAP
+    mov     ax, [dest_offset]
+    mov     [dap_offset], ax
     mov     word [dap_segment], 0
-    mov     dword [dap_lba_lo], 1    ; Start at LBA 1 (after boot sector)
+    mov     eax, [cur_lba]
+    mov     [dap_lba_lo], eax
     mov     dword [dap_lba_hi], 0
 
     ; Perform LBA read
     mov     si, dap
-    mov     ah, 0x42
+    mov     ax, 0x4200              ; AH=42h, AL=0 (clean register)
     mov     dl, [BOOT_DRIVE_ADDR]
     int     0x13
     jc      disk_error
 
+    ; Print progress dot
+    mov     ax, 0x0E2E
+    int     0x10
+
+    ; Advance to next chunk
+    mov     ax, [dap_sectors]
+    sub     [sectors_rem], ax
+    add     [cur_lba], ax
+    shl     ax, 9                   ; Multiply by 512
+    add     [dest_offset], ax
+    jmp     .read_loop
+
+.read_done:
     ; Print OK
     mov     si, msg_ok
     call    print_string
@@ -155,6 +192,11 @@ msg_ok:         db ' OK', 13, 10, 0
 msg_disk_err:   db 13, 10, 'Disk error!', 0
 msg_stage2_err: db 13, 10, 'Stage2 bad!', 0
 msg_no_lba:     db 13, 10, 'No LBA!', 0
+
+; Variables for chunked reading
+cur_lba:        dd 0                    ; Current LBA (32-bit for larger disks)
+sectors_rem:    dw 0                    ; Sectors remaining to read
+dest_offset:    dw 0                    ; Current destination offset
 
 ; ============================================================================
 ; Boot Sector Padding and Signature
