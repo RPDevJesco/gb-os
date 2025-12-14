@@ -313,7 +313,7 @@ verify_a20:
 ; Load Kernel (using LBA extensions - no floppy geometry)
 ; ============================================================================
 
-KERNEL_SECTOR   equ 33          ; After boot(1) + stage2(32)
+KERNEL_SECTOR   equ 36          ; After boot(4 sectors for CD alignment) + stage2(32)
 KERNEL_SECTORS  equ 200         ; 100KB kernel (94KB actual + headroom)
 KERNEL_LOAD_SEG equ 0x2000      ; Load to 0x20000
 KERNEL_LOAD_OFF equ 0x0000

@@ -69,24 +69,20 @@ start:
     jmp     halt
 
 .load_stage2:
-    ; Load stage 2 using LBA extensions
-    ; Read in small chunks (4 sectors at a time) for better compatibility
-    ; Some BIOSes hang on large multi-sector reads
-    mov     word [cur_lba], 1           ; Start at LBA 1 (after boot sector)
-    mov     word [sectors_rem], STAGE2_SECTORS
+    ; Stage2 is at byte offset 2048 in the disk image
+    ; For 2048-byte sectors (CD): LBA 1 (1 * 2048 = 2048)
+    ; Read 8 sectors of 2048 bytes each = 16KB for stage2
+    ; Read 1 sector at a time to avoid BIOS compatibility issues
+    mov     dword [cur_lba], 1          ; Start at LBA 1 (byte 2048 for CD)
+    mov     word [sectors_rem], 8       ; 8 sectors for stage2
     mov     word [dest_offset], STAGE2_OFFSET
 
 .read_loop:
     cmp     word [sectors_rem], 0
     je      .read_done
 
-    ; Calculate sectors to read this iteration (max 4)
-    mov     ax, [sectors_rem]
-    cmp     ax, 4
-    jbe     .use_remaining
-    mov     ax, 4
-.use_remaining:
-    mov     [dap_sectors], ax
+    ; Read 1 sector at a time for maximum compatibility
+    mov     word [dap_sectors], 1
 
     ; Set up DAP
     mov     ax, [dest_offset]
@@ -107,12 +103,10 @@ start:
     mov     ax, 0x0E2E
     int     0x10
 
-    ; Advance to next chunk
-    mov     ax, [dap_sectors]
-    sub     [sectors_rem], ax
-    add     [cur_lba], ax
-    shl     ax, 9                   ; Multiply by 512
-    add     [dest_offset], ax
+    ; Advance to next sector (2048 bytes for CD sectors)
+    dec     word [sectors_rem]
+    inc     dword [cur_lba]
+    add     word [dest_offset], 2048    ; CD sector size
     jmp     .read_loop
 
 .read_done:

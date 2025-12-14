@@ -145,8 +145,10 @@ if [ "$BUILD_NORMAL" = "yes" ]; then
     echo "      Creating rustacean.img (8MB disk image)..."
     dd if=/dev/zero of=build/rustacean.img bs=512 count=$DISK_SECTORS 2>/dev/null
     dd if=build/boot.bin of=build/rustacean.img bs=512 count=1 conv=notrunc 2>/dev/null
-    dd if=build/stage2.bin of=build/rustacean.img bs=512 seek=1 conv=notrunc 2>/dev/null
-    dd if=build/kernel.bin of=build/rustacean.img bs=512 seek=33 conv=notrunc 2>/dev/null
+    # Place stage2 at sector 4 (byte offset 2048) for CD sector alignment
+    dd if=build/stage2.bin of=build/rustacean.img bs=512 seek=4 conv=notrunc 2>/dev/null
+    # Kernel follows stage2 (32 sectors) starting at sector 36
+    dd if=build/kernel.bin of=build/rustacean.img bs=512 seek=36 conv=notrunc 2>/dev/null
     echo "      rustacean.img: $(stat -c%s build/rustacean.img) bytes"
 
     echo "      Creating rustacean.iso (El Torito hard-disk emulation)..."
@@ -173,8 +175,13 @@ if [ "$BUILD_GAMEBOY" = "yes" ]; then
     echo "      Creating gameboy-system.img (8MB disk image)..."
     dd if=/dev/zero of=build/gameboy-system.img bs=512 count=$DISK_SECTORS 2>/dev/null
     dd if=build/boot.bin of=build/gameboy-system.img bs=512 count=1 conv=notrunc 2>/dev/null
-    dd if=build/stage2-gameboy.bin of=build/gameboy-system.img bs=512 seek=1 conv=notrunc 2>/dev/null
-    dd if=build/kernel.bin of=build/gameboy-system.img bs=512 seek=33 conv=notrunc 2>/dev/null
+    # Place stage2 at sector 4 (byte offset 2048) for CD sector alignment
+    # This allows the bootloader to work with both 512-byte and 2048-byte sectors:
+    # - 512-byte sectors: stage2 at LBA 4
+    # - 2048-byte sectors (CD): stage2 at LBA 1
+    dd if=build/stage2-gameboy.bin of=build/gameboy-system.img bs=512 seek=4 conv=notrunc 2>/dev/null
+    # Kernel follows stage2 (32 sectors) starting at sector 36
+    dd if=build/kernel.bin of=build/gameboy-system.img bs=512 seek=36 conv=notrunc 2>/dev/null
 
     # Embed ROM if provided via ROM_FILE environment variable or /input/game.gb
     ROM_FILE="${ROM_FILE:-}"
