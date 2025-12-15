@@ -312,7 +312,7 @@ fn run_gameboy_emulator() -> ! {
     };
 
     // Create emulator
-    let mut device = match gameboy::Device::new(rom_data, false) {
+    let mut device = match gameboy::Device::new_cgb(rom_data, false) {
         Ok(d) => d,
         Err(_e) => {
             show_emulator_error();
