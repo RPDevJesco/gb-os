@@ -1,12 +1,12 @@
 @echo off
-REM Rustacean OS Docker Build Script for Windows (with GameBoy Mode)
+REM gb-os Docker Build Script for Windows
 REM
 REM Usage: build.bat [options]
 REM
 REM Options:
-REM   --gameboy     Build GameBoy edition only
+REM   --gameboy     Build GameBoy edition only (default)
 REM   --both        Build both normal and GameBoy editions
-REM   --rom FILE    Embed ROM file into GameBoy ISO (use with --gameboy)
+REM   --rom FILE    Embed ROM file into GameBoy ISO
 REM   --tools       Build mkgamedisk tool only
 REM   --no-cache    Force rebuild without Docker cache
 REM   --shell       Open a shell in the build container
@@ -14,73 +14,79 @@ REM
 
 setlocal enabledelayedexpansion
 
-set IMAGE_NAME=rustacean-builder
-set OUTPUT_DIR=%~dp0output
+REM Configuration
+set IMAGE_NAME=gb-os-builder
+set SCRIPT_DIR=%~dp0
+set SCRIPT_DIR=%SCRIPT_DIR:~0,-1%
+set OUTPUT_DIR=%SCRIPT_DIR%\output
 set NO_CACHE=
 set SHELL_MODE=
-set BUILD_MODE=
+set BUILD_MODE=--gameboy
 set ROM_FILE=
 
 REM Parse arguments
 :parse_args
 if "%~1"=="" goto :done_parsing
-if "%~1"=="--no-cache" (
+if /i "%~1"=="--no-cache" (
     set NO_CACHE=--no-cache
     shift
     goto :parse_args
 )
-if "%~1"=="--shell" (
+if /i "%~1"=="--shell" (
     set SHELL_MODE=yes
     shift
     goto :parse_args
 )
-if "%~1"=="--gameboy" (
+if /i "%~1"=="--gameboy" (
     set BUILD_MODE=--gameboy
     shift
     goto :parse_args
 )
-if "%~1"=="--both" (
+if /i "%~1"=="--both" (
     set BUILD_MODE=--both
     shift
     goto :parse_args
 )
-if "%~1"=="--tools" (
+if /i "%~1"=="--tools" (
     set BUILD_MODE=--tools
     shift
     goto :parse_args
 )
-if "%~1"=="--rom" (
+if /i "%~1"=="--rom" (
     set ROM_FILE=%~2
     shift
     shift
     goto :parse_args
 )
-if "%~1"=="--help" goto :show_help
-if "%~1"=="-h" goto :show_help
+if /i "%~1"=="--help" goto :show_help
+if /i "%~1"=="-h" goto :show_help
+echo [WARN] Unknown option: %~1
 shift
 goto :parse_args
 
 :show_help
-echo Rustacean OS Docker Build Script for Windows (with GameBoy Mode)
+echo gb-os Docker Build Script for Windows
 echo.
 echo Usage: build.bat [options]
 echo.
 echo Build Options:
-echo   --gameboy         Build GameBoy edition only
+echo   --gameboy         Build GameBoy edition only (default)
 echo   --both            Build both normal and GameBoy editions
-echo   --rom FILE        Embed ROM into GameBoy ISO (use with --gameboy)
+echo   --rom FILE        Embed ROM into GameBoy ISO
 echo   --tools           Build mkgamedisk tool only
+echo.
+echo Docker Options:
 echo   --no-cache        Force rebuild without Docker cache
+echo   --shell           Open a shell in the build container
 echo.
 echo Other Options:
-echo   --shell           Open a shell in the build container
 echo   --help, -h        Show this help message
 echo.
 echo Examples:
-echo   build.bat                           Build normal Rustacean OS
-echo   build.bat --gameboy                 Build GameBoy edition (no ROM)
-echo   build.bat --gameboy --rom tetris.gb Build GameBoy edition WITH ROM embedded
-echo   build.bat --both --rom pokemon.gb   Build both editions, GameBoy has ROM
+echo   build.bat                           Build GameBoy edition
+echo   build.bat --rom tetris.gb           Build with embedded ROM
+echo   build.bat --both --rom pokemon.gb   Build both, GameBoy has ROM
+echo   build.bat --shell                   Debug in container
 exit /b 0
 
 :done_parsing
@@ -89,40 +95,60 @@ REM Create output directory
 if not exist "%OUTPUT_DIR%" mkdir "%OUTPUT_DIR%"
 
 echo ========================================
-echo   Rustacean OS Docker Builder
+echo   gb-os Docker Builder
 echo ========================================
 echo.
 
-REM Build Docker image
-echo [Docker] Building image '%IMAGE_NAME%'...
-docker build %NO_CACHE% -t %IMAGE_NAME% .
+REM Check Docker is available
+docker --version >nul 2>&1
 if errorlevel 1 (
-    echo [Error] Docker build failed!
+    echo [ERROR] Docker is not installed or not in PATH
     exit /b 1
 )
 
+REM Build Docker image
+echo [INFO] Building Docker image '%IMAGE_NAME%'...
+docker build %NO_CACHE% -t %IMAGE_NAME% "%SCRIPT_DIR%"
+if errorlevel 1 (
+    echo [ERROR] Docker build failed!
+    exit /b 1
+)
+echo [OK] Docker image built
+echo.
+
+REM Shell mode
 if "%SHELL_MODE%"=="yes" (
-    echo.
-    echo [Docker] Opening shell in container...
+    echo [INFO] Opening shell in container...
     docker run --rm -it -v "%OUTPUT_DIR%:/output" %IMAGE_NAME% /bin/bash
     exit /b 0
 )
 
-echo.
-echo [Docker] Running build %BUILD_MODE%...
+REM Run the build
+echo [INFO] Running build %BUILD_MODE%...
 
-REM If ROM file specified, mount it and set ROM_FILE env
 if not "%ROM_FILE%"=="" (
-    for %%F in ("%ROM_FILE%") do set ROM_DIR=%%~dpF
-    for %%F in ("%ROM_FILE%") do set ROM_NAME=%%~nxF
-    echo [ROM] Embedding: %ROM_FILE%
+    REM Validate ROM file exists
+    if not exist "%ROM_FILE%" (
+        echo [ERROR] ROM file not found: %ROM_FILE%
+        exit /b 1
+    )
+    
+    REM Get absolute path and separate directory/filename
+    for %%F in ("%ROM_FILE%") do (
+        set ROM_DIR=%%~dpF
+        set ROM_NAME=%%~nxF
+    )
+    REM Remove trailing backslash from ROM_DIR
+    if "!ROM_DIR:~-1!"=="\" set ROM_DIR=!ROM_DIR:~0,-1!
+    
+    echo [INFO] Embedding ROM: !ROM_NAME!
     docker run --rm -v "%OUTPUT_DIR%:/output" -v "!ROM_DIR!:/input:ro" -e "ROM_FILE=/input/!ROM_NAME!" %IMAGE_NAME% /build.sh %BUILD_MODE%
 ) else (
     docker run --rm -v "%OUTPUT_DIR%:/output" %IMAGE_NAME% /build.sh %BUILD_MODE%
 )
 
 if errorlevel 1 (
-    echo [Error] Build failed!
+    echo [ERROR] Build failed!
     exit /b 1
 )
 
@@ -130,22 +156,14 @@ echo.
 echo ========================================
 echo   Output Files
 echo ========================================
-dir "%OUTPUT_DIR%"
+dir "%OUTPUT_DIR%" /b
 
 echo.
-echo Done! Output files are in: %OUTPUT_DIR%
+echo [OK] Build complete! Output in: %OUTPUT_DIR%
 echo.
 
-if "%BUILD_MODE%"=="--gameboy" (
-    echo To run GameBoy mode:
-    echo   qemu-system-i386 -cdrom "%OUTPUT_DIR%\gameboy-system.iso" -boot d -m 256M
-    echo.
-    if not "%ROM_FILE%"=="" (
-        echo ROM embedded: %ROM_FILE%
-    ) else (
-        echo No ROM embedded. Use --rom FILE to embed a game.
-    )
-) else (
-    echo To run:
-    echo   qemu-system-i386 -cdrom "%OUTPUT_DIR%\rustacean.iso" -boot d -m 256M
-)
+echo To run GameBoy mode:
+echo   qemu-system-i386 -cdrom "%OUTPUT_DIR%\gameboy-system.iso" -boot d -m 256M
+echo.
+
+exit /b 0

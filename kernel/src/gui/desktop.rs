@@ -46,7 +46,7 @@ impl Terminal {
         });
 
         // Welcome message
-        term.print("Rustacean OS v0.1.0");
+        term.print("gb-os v0.1.0");
         term.print("Type 'help' for commands");
         term.print("");
 
@@ -400,7 +400,7 @@ impl Desktop {
     /// Draw Welcome window content
     fn draw_welcome_content(&self, fb: &mut Framebuffer, window: &Window) {
         let theme = theme::current();
-        window.draw_text(fb, 8, 8, "Welcome to Rustacean OS!", theme.text);
+        window.draw_text(fb, 8, 8, "Welcome to gb-os!", theme.text);
         window.draw_text(fb, 8, 28, "A Plan 9 inspired OS written in Rust", theme.text);
         window.draw_text(fb, 8, 56, "Drag windows by title bar!", theme.text);
         window.draw_text(fb, 8, 76, "Click windows to focus.", theme.text);

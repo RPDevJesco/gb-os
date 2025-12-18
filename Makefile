@@ -1,26 +1,34 @@
-# Rustacean OS + GameBoy Integration Makefile
+﻿# gb-os Makefile
 #
-# Builds either normal Rustacean OS or GameBoy edition from same codebase.
+# Builds bare-metal GameBoy emulator or normal gb-os.
 #
-# Targets:
-#   make            - Build normal Rustacean OS
-#   make gameboy    - Build GameBoy edition
-#   make tools      - Build mkgamedisk ROM converter
-#   make game ROM=x - Create game floppy from ROM file
-#   make run        - Run normal mode in QEMU
-#   make run-gb     - Run GameBoy mode in QEMU
+# Quick Start (Docker - Recommended):
+#   ./docker-build.sh                    # Build GameBoy edition
+#   ./docker-build.sh --rom game.gb      # Build with embedded ROM
+#
+# Native Build Targets:
+#   make                - Build normal gb-os
+#   make gameboy        # Build GameBoy edition
+#   make tools          - Build mkgamedisk ROM converter
+#   make game ROM=x     - Create game floppy from ROM file
+#   make run            - Run normal mode in QEMU
+#   make run-gb         - Run GameBoy mode in QEMU
+#   make docker         - Build via Docker
+#   make clean          - Remove build artifacts
 
 # Tools
 NASM := nasm
 CARGO := cargo
 DD := dd
 OBJCOPY := objcopy
+QEMU := qemu-system-i386
 
 # Directories
 BOOT_DIR := boot
 KERNEL_DIR := kernel
 TOOLS_DIR := tools
 BUILD_DIR := build
+OUTPUT_DIR := output
 
 # Target specification
 TARGET_JSON := ../i686-rustacean.json
@@ -37,18 +45,53 @@ KERNEL_BIN := $(BUILD_DIR)/kernel.bin
 NORMAL_IMG := $(BUILD_DIR)/rustacean.img
 GAMEBOY_IMG := $(BUILD_DIR)/gameboy-system.img
 
-.PHONY: all normal gameboy clean tools game run run-gb
+# Docker
+DOCKER_IMAGE := gb-os-builder
 
-# Default: build normal Rustacean OS
-all: normal
+.PHONY: all normal gameboy clean tools game run run-gb docker docker-shell help
+
+# Default: show help
+help:
+	@echo "gb-os Build System"
+	@echo ""
+	@echo "Docker Build (Recommended):"
+	@echo "  make docker              Build GameBoy edition via Docker"
+	@echo "  make docker-shell        Open shell in build container"
+	@echo ""
+	@echo "Native Build:"
+	@echo "  make normal              Build normal gb-os"
+	@echo "  make gameboy             Build GameBoy edition"
+	@echo "  make tools               Build mkgamedisk tool"
+	@echo "  make game ROM=file.gb    Create game floppy from ROM"
+	@echo ""
+	@echo "Run:"
+	@echo "  make run                 Run normal mode in QEMU"
+	@echo "  make run-gb              Run GameBoy mode in QEMU"
+	@echo ""
+	@echo "Other:"
+	@echo "  make clean               Remove build artifacts"
+	@echo ""
+
+# Convenience: just 'make' builds gameboy
+all: gameboy
 
 # ============================================================================
-# Normal Rustacean OS Build
+# Docker Build (Recommended)
+# ============================================================================
+
+docker:
+	@./docker-build.sh --gameboy
+
+docker-shell:
+	@./docker-build.sh --shell
+
+# ============================================================================
+# Normal gb-os Build
 # ============================================================================
 
 normal: $(NORMAL_IMG)
 	@echo ""
-	@echo "=== Normal Rustacean OS built ==="
+	@echo "=== Normal gb-os built ==="
 	@echo "Run with: make run"
 
 $(NORMAL_IMG): $(BOOT_BIN) $(STAGE2_BIN) $(KERNEL_BIN)
@@ -57,7 +100,6 @@ $(NORMAL_IMG): $(BOOT_BIN) $(STAGE2_BIN) $(KERNEL_BIN)
 	$(DD) if=$(STAGE2_BIN) of=$@ bs=512 seek=1 conv=notrunc 2>/dev/null
 	$(DD) if=$(KERNEL_BIN) of=$@ bs=512 seek=33 conv=notrunc 2>/dev/null
 
-# Stage 2 for normal mode (no GAMEBOY_MODE flag)
 $(STAGE2_BIN): $(BOOT_DIR)/stage2.asm | $(BUILD_DIR)
 	$(NASM) -f bin -o $@ $<
 
@@ -69,7 +111,7 @@ gameboy: $(GAMEBOY_IMG)
 	@echo ""
 	@echo "=== GameBoy Edition built ==="
 	@echo "Run with: make run-gb"
-	@echo "Create game floppy with: make game ROM=path/to/game.gb"
+	@echo "Create game floppy: make game ROM=path/to/game.gb"
 
 $(GAMEBOY_IMG): $(BOOT_BIN) $(STAGE2_GB_BIN) $(KERNEL_BIN)
 	$(DD) if=/dev/zero of=$@ bs=512 count=2880 2>/dev/null
@@ -77,92 +119,105 @@ $(GAMEBOY_IMG): $(BOOT_BIN) $(STAGE2_GB_BIN) $(KERNEL_BIN)
 	$(DD) if=$(STAGE2_GB_BIN) of=$@ bs=512 seek=1 conv=notrunc 2>/dev/null
 	$(DD) if=$(KERNEL_BIN) of=$@ bs=512 seek=33 conv=notrunc 2>/dev/null
 
-# Stage 2 for GameBoy mode (with GAMEBOY_MODE flag)
 $(STAGE2_GB_BIN): $(BOOT_DIR)/stage2.asm | $(BUILD_DIR)
 	$(NASM) -f bin -DGAMEBOY_MODE -o $@ $<
 
 # ============================================================================
-# Common Components
+# Common Build Steps
 # ============================================================================
+
+$(BOOT_BIN): $(BOOT_DIR)/boot.asm | $(BUILD_DIR)
+	$(NASM) -f bin -o $@ $<
+
+$(KERNEL_BIN): $(KERNEL_ELF) | $(BUILD_DIR)
+	$(OBJCOPY) -O binary $< $@
+
+$(KERNEL_ELF): FORCE
+	cd $(KERNEL_DIR) && $(CARGO) +nightly build --release \
+		--target $(TARGET_JSON) \
+		-Zbuild-std=core,alloc \
+		-Zbuild-std-features=compiler-builtins-mem
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
-# Stage 1 bootloader (same for both modes)
-$(BOOT_BIN): $(BOOT_DIR)/boot.asm | $(BUILD_DIR)
-	$(NASM) -f bin -o $@ $<
+$(OUTPUT_DIR):
+	mkdir -p $(OUTPUT_DIR)
 
-# Kernel (same binary, mode detected at runtime via boot info magic)
-$(KERNEL_BIN): FORCE | $(BUILD_DIR)
-	cd $(KERNEL_DIR) && $(CARGO) build --release \
-		--target $(TARGET_JSON) \
-		-Zbuild-std=core,alloc \
-		-Zbuild-std-features=compiler-builtins-mem
-	$(OBJCOPY) -O binary $(KERNEL_ELF) $@
+FORCE:
 
 # ============================================================================
 # Tools
 # ============================================================================
 
-tools: $(BUILD_DIR)/mkgamedisk
+tools:
+	@if [ -d "$(TOOLS_DIR)/mkgamedisk" ]; then \
+		cd $(TOOLS_DIR)/mkgamedisk && $(CARGO) build --release; \
+		mkdir -p $(BUILD_DIR); \
+		cp target/release/mkgamedisk ../../$(BUILD_DIR)/; \
+		echo "mkgamedisk built: $(BUILD_DIR)/mkgamedisk"; \
+	else \
+		echo "tools/mkgamedisk not found"; \
+	fi
 
-$(BUILD_DIR)/mkgamedisk: FORCE | $(BUILD_DIR)
-	cd $(TOOLS_DIR)/mkgamedisk && $(CARGO) build --release
-	cp $(TOOLS_DIR)/mkgamedisk/target/release/mkgamedisk $@
-	@echo "Built: $@"
+# ============================================================================
+# Game Floppy Creation
+# ============================================================================
 
-# Create game floppy from ROM file
-# Usage: make game ROM=path/to/game.gb
-game: $(BUILD_DIR)/mkgamedisk
+game:
 ifndef ROM
-	$(error ROM not specified. Usage: make game ROM=path/to/game.gb)
-endif
-	$(BUILD_DIR)/mkgamedisk $(ROM) $(BUILD_DIR)/game.img
+	@echo "Usage: make game ROM=path/to/game.gb"
 	@echo ""
-	@echo "Game floppy created: $(BUILD_DIR)/game.img"
+	@echo "Creates a game floppy image from a ROM file."
+	@exit 1
+endif
+	@if [ ! -f "$(BUILD_DIR)/mkgamedisk" ]; then \
+		echo "Building mkgamedisk first..."; \
+		$(MAKE) tools; \
+	fi
+	@mkdir -p $(OUTPUT_DIR)
+	$(BUILD_DIR)/mkgamedisk "$(ROM)" $(OUTPUT_DIR)/game.img
+	@echo ""
+	@echo "Game floppy created: $(OUTPUT_DIR)/game.img"
 
 # ============================================================================
 # Run in QEMU
 # ============================================================================
 
-# Run normal Rustacean OS
 run: $(NORMAL_IMG)
-	qemu-system-i386 \
-		-fda $< \
-		-boot a \
-		-m 256M \
-		-vga std
+	$(QEMU) -fda $< -boot a -m 256M
 
-# Run GameBoy edition (prompts for floppy swap)
 run-gb: $(GAMEBOY_IMG)
-	@echo "GameBoy Mode: You'll be prompted to 'insert' game floppy"
-	@echo "In QEMU, use Ctrl+Alt+2 for monitor, then: change floppy0 build/game.img"
-	@echo ""
-	qemu-system-i386 \
-		-fda $< \
-		-boot a \
-		-m 256M \
-		-vga std
+	$(QEMU) -fda $< -boot a -m 256M
 
-# Run GameBoy with game pre-loaded (for testing)
-# Usage: make run-game ROM=path/to/game.gb
-run-game: $(GAMEBOY_IMG) game
-	@echo "Running GameBoy OS with game floppy..."
-	qemu-system-i386 \
-		-fda $(GAMEBOY_IMG) \
-		-fdb $(BUILD_DIR)/game.img \
-		-boot a \
-		-m 256M \
-		-vga std
+# Run with CD-ROM image
+run-cd: $(BUILD_DIR)/rustacean.iso
+	$(QEMU) -cdrom $< -boot d -m 256M
 
-# Debug mode (text output to serial)
-debug: $(NORMAL_IMG)
-	qemu-system-i386 \
-		-fda $< \
-		-boot a \
-		-m 256M \
-		-nographic \
-		-serial mon:stdio
+run-gb-cd: $(BUILD_DIR)/gameboy-system.iso
+	$(QEMU) -cdrom $< -boot d -m 256M
+
+# ============================================================================
+# ISO Creation (optional)
+# ============================================================================
+
+$(BUILD_DIR)/rustacean.iso: $(NORMAL_IMG)
+	mkdir -p $(BUILD_DIR)/iso
+	cp $< $(BUILD_DIR)/iso/
+	genisoimage -o $@ -b rustacean.img -no-emul-boot -boot-load-size 4 \
+		-boot-info-table -V "RUSTACEAN_OS" $(BUILD_DIR)/iso/ 2>/dev/null || \
+	xorriso -as mkisofs -o $@ -b rustacean.img -no-emul-boot -boot-load-size 4 \
+		-boot-info-table -V "RUSTACEAN_OS" $(BUILD_DIR)/iso/ 2>/dev/null
+	rm -rf $(BUILD_DIR)/iso
+
+$(BUILD_DIR)/gameboy-system.iso: $(GAMEBOY_IMG)
+	mkdir -p $(BUILD_DIR)/iso
+	cp $< $(BUILD_DIR)/iso/
+	genisoimage -o $@ -b gameboy-system.img -no-emul-boot -boot-load-size 4 \
+		-boot-info-table -V "GAMEBOY_OS" $(BUILD_DIR)/iso/ 2>/dev/null || \
+	xorriso -as mkisofs -o $@ -b gameboy-system.img -no-emul-boot -boot-load-size 4 \
+		-boot-info-table -V "GAMEBOY_OS" $(BUILD_DIR)/iso/ 2>/dev/null
+	rm -rf $(BUILD_DIR)/iso
 
 # ============================================================================
 # Clean
@@ -170,7 +225,14 @@ debug: $(NORMAL_IMG)
 
 clean:
 	rm -rf $(BUILD_DIR)
+	rm -rf $(OUTPUT_DIR)
 	cd $(KERNEL_DIR) && $(CARGO) clean 2>/dev/null || true
-	cd $(TOOLS_DIR)/mkgamedisk && $(CARGO) clean 2>/dev/null || true
+	@if [ -d "$(TOOLS_DIR)/mkgamedisk" ]; then \
+		cd $(TOOLS_DIR)/mkgamedisk && $(CARGO) clean 2>/dev/null || true; \
+	fi
+	@echo "Clean complete"
 
-FORCE:
+# Deep clean including Docker
+distclean: clean
+	docker rmi $(DOCKER_IMAGE) 2>/dev/null || true
+	@echo "Distclean complete"

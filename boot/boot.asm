@@ -165,7 +165,7 @@ print_string:
 ; Data
 ; ============================================================================
 
-msg_boot:       db 'RetroFutureGB', 13, 10, 'Loading', 0
+msg_boot:       db 'gb-os', 13, 10, 'Loading', 0
 msg_ok:         db ' OK', 13, 10, 0
 msg_disk_err:   db 13, 10, 'Disk error!', 0
 msg_stage2_err: db 13, 10, 'Stage2 bad!', 0

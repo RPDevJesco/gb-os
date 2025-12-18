@@ -95,6 +95,7 @@ static mut IDT_PTR: IdtPointer = IdtPointer {
 };
 
 /// Simple tick counter for timer (if PIT module not available)
+#[allow(dead_code)]
 static mut TICK_COUNT: u32 = 0;
 
 /// Interrupt frame pushed by CPU
@@ -404,7 +405,7 @@ extern "C" fn interrupt_handler(frame: &InterruptFrame) {
         // IRQs (32-47)
         32 => timer_handler(),
         33 => keyboard_handler(),
-        44 => mouse_handler(),  // IRQ12 = interrupt 44
+        44 => mouse_handler(),  // IRQ 12 = interrupt 44
 
         // Other IRQs
         32..=47 => {

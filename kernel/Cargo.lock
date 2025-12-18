@@ -3,5 +3,5 @@
 version = 3
 
 [[package]]
-name = "rustacean-kernel"
+name = "gb-os"
 version = "0.1.0"

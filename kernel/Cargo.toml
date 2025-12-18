@@ -1,13 +1,13 @@
 [package]
-name = "rustacean-kernel"
+name = "gb-os"
 version = "0.1.0"
 edition = "2021"
-authors = ["Rustacean OS Contributors"]
-description = "Rustacean OS Kernel - Plan 9 style GUI OS with EventChains"
+authors = ["gb-os Contributors"]
+description = "game boy emulations operating system"
 
 # Build as a binary (kernel executable)
 [[bin]]
-name = "rustacean-kernel"
+name = "gb-os"
 path = "src/main.rs"
 
 [dependencies]
