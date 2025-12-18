@@ -22,6 +22,8 @@ mod gui;
 // GameBoy emulator
 mod gameboy;
 
+mod storage;
+
 use boot_info::BootInfo;
 use arch::x86::{gdt, idt};
 use core::arch::global_asm;
@@ -115,46 +117,52 @@ unsafe fn draw_bar(x: isize, row: isize, color: u8, width: isize) {
 // ============================================================================
 // Kernel Main
 // ============================================================================
-
 #[no_mangle]
 extern "C" fn kernel_main(_boot_info_ptr: u32) -> ! {
-    const ROW: isize = 320 * 10;  // Row 10 for progress
-
-    // Stage M1: In kernel_main - MAGENTA
-    unsafe { draw_bar(0, ROW, 0x05, 20); }
-
     // Parse boot info from fixed address 0x500
     let boot_info = unsafe { BootInfo::from_ptr(0x500 as *const u8) };
-
-    // Stage M2: Parsed - GREEN
-    unsafe { draw_bar(20, ROW, 0x02, 20); }
-
-    // Stage M3: Skip magic verify (we know it's correct) - YELLOW
-    unsafe { draw_bar(40, ROW, 0x0E, 20); }
 
     // Initialize GDT
     gdt::init();
 
-    // Stage M4: GDT OK - LIGHT CYAN
-    unsafe { draw_bar(60, ROW, 0x0B, 20); }
-
     // Initialize IDT
     idt::init();
-
-    // Stage M5: IDT OK - CYAN
-    unsafe { draw_bar(80, ROW, 0x03, 20); }
 
     // Initialize memory manager
     mm::init(boot_info.e820_map_addr);
 
-    // Stage M6: Memory OK - LIGHT GREEN
-    unsafe { draw_bar(100, ROW, 0x0A, 20); }
+    // Initialize storage subsystem (with debug output)
+    // This will show colored bars on rows 5-8 of VGA mode 13h
+    let storage_result = storage::init();
+
+    // Test disk read if devices found
+    if storage_result.ata_devices > 0 {
+        storage::test_read();
+
+        // Example: Read MBR from first device
+        let mut buffer = [0u8; 512];
+        if let Ok(_count) = storage::read_sectors(0, 0, 1, &mut buffer) {
+            // buffer now contains sector 0 (MBR)
+            // Debug: check for MBR signature
+            if buffer[510] == 0x55 && buffer[511] == 0xAA {
+                // Valid MBR found - draw green indicator
+                unsafe {
+                    let vga = 0xA0000 as *mut u8;
+                    core::ptr::write_volatile(vga.add(320 * 15), 0x0A);
+                }
+            }
+        }
+
+        // Example: Get device info
+        if let Some(device) = storage::ata::get_device(0) {
+            let _model = device.model_str();
+            let _capacity = device.capacity_mb();
+            // Could display this info later in a UI
+        }
+    }
 
     // Enable interrupts
     unsafe { core::arch::asm!("sti"); }
-
-    // Stage M7: All init done - WHITE
-    unsafe { draw_bar(120, ROW, 0x0F, 40); }
 
     // =========================================================================
     // Initialize GameBoy Emulator
@@ -165,9 +173,6 @@ extern "C" fn kernel_main(_boot_info_ptr: u32) -> ! {
 
     // Draw Game Boy border
     draw_gb_border();
-
-    // Stage M8: Display ready - BRIGHT WHITE bar
-    unsafe { draw_bar(160, ROW, 0x0F, 40); }
 
     // Try to load and run the emulator
     run_gameboy_emulator();
