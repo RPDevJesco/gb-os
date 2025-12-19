@@ -1,5 +1,5 @@
 ; ============================================================================
-; stage2.asm - Stage 2 Bootloader for RetroFuture GB
+; stage2.asm - Stage 2 Bootloader for gb-os
 ; ============================================================================
 ;
 ; Clean, minimal bootloader for Game Boy emulation:
@@ -742,7 +742,7 @@ rom_title:      times 32 db 0
 
 ; Messages (short to save space)
 msg_banner:     db 13, 10
-                db '=== RetroFuture GB ===', 13, 10, 0
+                db '=== gb-os ===', 13, 10, 0
 msg_e820:       db ' E820..', 0
 msg_a20:        db ' A20..', 0
 msg_vga:        db ' VGA..', 0

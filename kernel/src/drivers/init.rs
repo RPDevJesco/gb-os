@@ -126,7 +126,7 @@ impl ChainableEvent for AtiRageProbeEvent {
                             context.set_u32(context_keys::FB_BPP, gpu.bpp() / 8);
                             context.set_u32(context_keys::FB_PITCH, gpu.pitch());
 
-                            gpu.enable_hw_cursor();
+                            gpu.enable_cursor();
                             context.set_bool(context_keys::HW_CURSOR, true);
 
                             EventResult::success(())

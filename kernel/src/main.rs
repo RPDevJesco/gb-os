@@ -22,6 +22,8 @@ mod gui;
 // GameBoy emulator
 mod gameboy;
 
+mod storage;
+
 use boot_info::BootInfo;
 use arch::x86::{gdt, idt};
 use core::arch::global_asm;
@@ -115,62 +117,72 @@ unsafe fn draw_bar(x: isize, row: isize, color: u8, width: isize) {
 // ============================================================================
 // Kernel Main
 // ============================================================================
-
 #[no_mangle]
 extern "C" fn kernel_main(_boot_info_ptr: u32) -> ! {
-    const ROW: isize = 320 * 10;  // Row 10 for progress
-
-    // Stage M1: In kernel_main - MAGENTA
-    unsafe { draw_bar(0, ROW, 0x05, 20); }
-
     // Parse boot info from fixed address 0x500
     let boot_info = unsafe { BootInfo::from_ptr(0x500 as *const u8) };
-
-    // Stage M2: Parsed - GREEN
-    unsafe { draw_bar(20, ROW, 0x02, 20); }
-
-    // Stage M3: Skip magic verify (we know it's correct) - YELLOW
-    unsafe { draw_bar(40, ROW, 0x0E, 20); }
 
     // Initialize GDT
     gdt::init();
 
-    // Stage M4: GDT OK - LIGHT CYAN
-    unsafe { draw_bar(60, ROW, 0x0B, 20); }
-
     // Initialize IDT
     idt::init();
-
-    // Stage M5: IDT OK - CYAN
-    unsafe { draw_bar(80, ROW, 0x03, 20); }
 
     // Initialize memory manager
     mm::init(boot_info.e820_map_addr);
 
-    // Stage M6: Memory OK - LIGHT GREEN
-    unsafe { draw_bar(100, ROW, 0x0A, 20); }
+    // Initialize storage subsystem
+    let storage_result = storage::init();
 
     // Enable interrupts
     unsafe { core::arch::asm!("sti"); }
 
-    // Stage M7: All init done - WHITE
-    unsafe { draw_bar(120, ROW, 0x0F, 40); }
+    // Test disk read if devices found
+    if storage_result.ata_devices > 0 {
+        storage::test_read();
 
-    // =========================================================================
-    // Initialize GameBoy Emulator
-    // =========================================================================
+        // Try to mount FAT32 and load ROM
+        if let Some((rom_ptr, rom_size)) = try_load_rom() {
+            // Clear screen first (dark green/gray like original GB)
+            clear_screen(0x00);
 
-    // Clear screen first (dark green/gray like original GB)
-    clear_screen(0x00);
+            // Draw Game Boy border
+            draw_gb_border();
 
-    // Draw Game Boy border
-    draw_gb_border();
+            // Run the emulator with loaded ROM
+            run_gameboy_emulator_with_rom(rom_ptr, rom_size);
+        }
+    }
 
-    // Stage M8: Display ready - BRIGHT WHITE bar
-    unsafe { draw_bar(160, ROW, 0x0F, 40); }
+    // Halt if we get here
+    loop {
+        unsafe { core::arch::asm!("hlt"); }
+    }
+}
 
-    // Try to load and run the emulator
-    run_gameboy_emulator();
+// Static ROM buffer - must be outside the function to have stable address
+static mut ROM_BUFFER: [u8; 2 * 1024 * 1024] = [0; 2 * 1024 * 1024]; // 2MB max
+
+/// Try to load first ROM from FAT32
+fn try_load_rom() -> Option<(*const u8, usize)> {
+    // Mount FAT32
+    if storage::fat32::mount(0).is_err() {
+        return None;
+    }
+
+    // Find first ROM
+    let (cluster, size) = storage::fat32::get_fs().find_rom(0)?;
+
+    // Load ROM data into static buffer
+    let rom_buf = unsafe { &mut ROM_BUFFER };
+
+    match storage::fat32::get_fs().read_file(cluster, size, rom_buf) {
+        Ok(bytes_read) => {
+            // Return pointer and size
+            Some((rom_buf.as_ptr(), bytes_read))
+        }
+        Err(_) => None,
+    }
 }
 
 // ============================================================================
@@ -286,6 +298,71 @@ fn blit_gb_to_vga(gb_data: &[u8]) {
 // ============================================================================
 // GameBoy Emulator Integration
 // ============================================================================
+fn run_gameboy_emulator_with_rom(rom_ptr: *const u8, rom_size: usize) -> ! {
+    use alloc::vec::Vec;
+
+    // Initialize PIT for accurate timing (1000 Hz = 1ms per tick)
+    arch::x86::pit::set_frequency(1000);
+
+    // Create ROM vec from loaded data
+    let rom_data: Vec<u8> = unsafe {
+        let rom_slice = core::slice::from_raw_parts(rom_ptr, rom_size);
+        rom_slice.to_vec()
+    };
+
+    // Create emulator
+    let mut device = match gameboy::Device::new_cgb(rom_data, false) {
+        Ok(d) => d,
+        Err(_e) => {
+            show_emulator_error();
+            loop { unsafe { core::arch::asm!("hlt"); } }
+        }
+    };
+
+    // Create input handler
+    let mut input_state = gameboy::input::InputState::new();
+
+    // Frame timing: 59.7 fps = ~16.75ms per frame
+    // At 1000 Hz, that's ~17 ticks per frame
+    const TICKS_PER_FRAME: u32 = 17;
+    let mut last_frame_ticks = arch::x86::pit::ticks();
+
+    // Main emulation loop
+    const CYCLES_PER_FRAME: u32 = 70224;  // ~59.7 FPS
+
+    loop {
+        // Run one frame of emulation
+        let mut cycles: u32 = 0;
+        while cycles < CYCLES_PER_FRAME {
+            cycles += device.do_cycle();
+        }
+
+        // Blit to screen if GPU updated
+        if device.check_and_reset_gpu_updated() {
+            let gpu_data = device.get_gpu_data();
+            blit_gb_to_vga(gpu_data);
+        }
+
+        // Process keyboard input
+        while let Some(key) = drivers::keyboard::get_key() {
+            if let Some(gb_key) = input_state.map_keycode(key.keycode) {
+                if key.pressed {
+                    device.keydown(gb_key);
+                } else {
+                    device.keyup(gb_key);
+                }
+            }
+        }
+
+        // Frame timing - wait until next frame time
+        let target_ticks = last_frame_ticks.wrapping_add(TICKS_PER_FRAME);
+        while arch::x86::pit::ticks().wrapping_sub(target_ticks) > 0x8000_0000 {
+            // Use HLT for power efficiency while waiting
+            unsafe { core::arch::asm!("hlt"); }
+        }
+        last_frame_ticks = target_ticks;
+    }
+}
 
 fn run_gameboy_emulator() -> ! {
     use alloc::vec::Vec;

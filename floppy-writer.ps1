@@ -21,7 +21,7 @@ param(
 # Find the image file
 function Find-Image {
     $searchPaths = @(
-        "output\game.img"
+        "output\gameboy-system.img"
     )
 
     foreach ($path in $searchPaths) {
@@ -44,9 +44,9 @@ if ($ListDisks) {
 if ($Image -eq "") {
     $Image = Find-Image
     if ($null -eq $Image) {
-        Write-Host "ERROR: Could not find RetroFutureGB.img" -ForegroundColor Red
-        Write-Host "Searched: RetroFutureGB.img, build\RetroFutureGB.img, output\RetroFutureGB.img" -ForegroundColor Yellow
-        Write-Host "`nBuild first with: docker build -t RetroFutureGB-builder . && docker run --rm -v `${PWD}/output:/output RetroFutureGB-builder" -ForegroundColor Cyan
+        Write-Host "ERROR: Could not find gameboy-system.img" -ForegroundColor Red
+        Write-Host "Searched: gameboy-system.img, build\gameboy-system.img, output\gameboy-system.img" -ForegroundColor Yellow
+        Write-Host "`nBuild first with: docker build -t gb-os-builder . && docker run --rm -v `${PWD}/output:/output gb-os-builder" -ForegroundColor Cyan
         exit 1
     }
 }
