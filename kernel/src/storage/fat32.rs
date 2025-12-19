@@ -130,48 +130,60 @@ impl Fat32 {
         if !self.mounted { return None; }
 
         let mut sector = [0u8; SECTOR_SIZE];
-        let root_lba = self.cluster_to_sector(self.root_cluster);
-
-        // Read root directory (just first sector for now)
-        if self.read_sector(root_lba, &mut sector).is_err() {
-            return None;
-        }
-
         let mut rom_index = 0usize;
+        let mut current_cluster = self.root_cluster;
 
-        for i in 0..16 {  // 16 entries per sector
-            let offset = i * 32;
-            let first_byte = sector[offset];
+        // Follow cluster chain for root directory
+        while current_cluster >= 2 && current_cluster < 0x0FFFFFF8 {
+            let cluster_lba = self.cluster_to_sector(current_cluster);
 
-            if first_byte == 0x00 { break; }  // End
-            if first_byte == 0xE5 { continue; }  // Deleted
-
-            let attr = sector[offset + 11];
-            if attr == 0x08 || attr == 0x0F { continue; }  // Volume/LFN
-            if (attr & 0x10) != 0 { continue; }  // Directory
-
-            // Check extension (offset 8-10)
-            let ext = &sector[offset + 8..offset + 11];
-            let is_gb = (ext[0] == b'G' || ext[0] == b'g') &&
-                (ext[1] == b'B' || ext[1] == b'b') &&
-                ext[2] == b' ';
-            let is_gbc = (ext[0] == b'G' || ext[0] == b'g') &&
-                (ext[1] == b'B' || ext[1] == b'b') &&
-                (ext[2] == b'C' || ext[2] == b'c');
-
-            if is_gb || is_gbc {
-                if rom_index == index {
-                    let cluster_lo = u16::from_le_bytes([sector[offset + 26], sector[offset + 27]]);
-                    let cluster_hi = u16::from_le_bytes([sector[offset + 20], sector[offset + 21]]);
-                    let cluster = ((cluster_hi as u32) << 16) | (cluster_lo as u32);
-                    let size = u32::from_le_bytes([
-                        sector[offset + 28], sector[offset + 29],
-                        sector[offset + 30], sector[offset + 31],
-                    ]);
-                    return Some((cluster, size));
+            // Read each sector in this cluster
+            for sector_offset in 0..self.sectors_per_cluster {
+                if self.read_sector(cluster_lba + sector_offset as u64, &mut sector).is_err() {
+                    return None;
                 }
-                rom_index += 1;
+
+                for i in 0..16 {  // 16 entries per sector
+                    let offset = i * 32;
+                    let first_byte = sector[offset];
+
+                    if first_byte == 0x00 { return None; }  // End of directory
+                    if first_byte == 0xE5 { continue; }  // Deleted
+
+                    let attr = sector[offset + 11];
+                    if attr == 0x0F { continue; }  // LFN entry
+                    if attr == 0x08 { continue; }  // Volume label
+                    if (attr & 0x10) != 0 { continue; }  // Directory
+
+                    // Check extension (offset 8-10) - case insensitive
+                    let ext0 = sector[offset + 8].to_ascii_uppercase();
+                    let ext1 = sector[offset + 9].to_ascii_uppercase();
+                    let ext2 = sector[offset + 10].to_ascii_uppercase();
+
+                    // Match .GB or .GBC
+                    let is_gb = ext0 == b'G' && ext1 == b'B' && (ext2 == b' ' || ext2 == b'C');
+
+                    if is_gb {
+                        if rom_index == index {
+                            let cluster_lo = u16::from_le_bytes([sector[offset + 26], sector[offset + 27]]);
+                            let cluster_hi = u16::from_le_bytes([sector[offset + 20], sector[offset + 21]]);
+                            let cluster = ((cluster_hi as u32) << 16) | (cluster_lo as u32);
+                            let size = u32::from_le_bytes([
+                                sector[offset + 28], sector[offset + 29],
+                                sector[offset + 30], sector[offset + 31],
+                            ]);
+                            return Some((cluster, size));
+                        }
+                        rom_index += 1;
+                    }
+                }
             }
+
+            // Get next cluster in chain
+            current_cluster = match self.get_next_cluster(current_cluster) {
+                Ok(next) => next,
+                Err(_) => break,
+            };
         }
 
         None
@@ -182,72 +194,180 @@ impl Fat32 {
         if !self.mounted { return false; }
 
         let mut sector = [0u8; SECTOR_SIZE];
-        let root_lba = self.cluster_to_sector(self.root_cluster);
-
-        if self.read_sector(root_lba, &mut sector).is_err() {
-            return false;
-        }
-
         let mut rom_index = 0usize;
+        let mut current_cluster = self.root_cluster;
 
-        for i in 0..16 {
-            let offset = i * 32;
-            let first_byte = sector[offset];
+        // Follow cluster chain for root directory
+        while current_cluster >= 2 && current_cluster < 0x0FFFFFF8 {
+            let cluster_lba = self.cluster_to_sector(current_cluster);
 
-            if first_byte == 0x00 { break; }
-            if first_byte == 0xE5 { continue; }
-
-            let attr = sector[offset + 11];
-            if attr == 0x08 || attr == 0x0F { continue; }
-            if (attr & 0x10) != 0 { continue; }
-
-            let ext = &sector[offset + 8..offset + 11];
-            let is_gb = (ext[0] == b'G' || ext[0] == b'g') &&
-                (ext[1] == b'B' || ext[1] == b'b');
-
-            if is_gb {
-                if rom_index == index {
-                    // Copy name (8 chars) + dot + ext (3 chars)
-                    let mut pos = 0;
-                    for j in 0..8 {
-                        let c = sector[offset + j];
-                        if c != b' ' {
-                            name_buf[pos] = c;
-                            pos += 1;
-                        }
-                    }
-                    name_buf[pos] = b'.';
-                    pos += 1;
-                    for j in 0..3 {
-                        let c = sector[offset + 8 + j];
-                        if c != b' ' {
-                            name_buf[pos] = c;
-                            pos += 1;
-                        }
-                    }
-                    // Null terminate rest
-                    while pos < 12 {
-                        name_buf[pos] = 0;
-                        pos += 1;
-                    }
-                    return true;
+            for sector_offset in 0..self.sectors_per_cluster {
+                if self.read_sector(cluster_lba + sector_offset as u64, &mut sector).is_err() {
+                    return false;
                 }
-                rom_index += 1;
+
+                for i in 0..16 {
+                    let offset = i * 32;
+                    let first_byte = sector[offset];
+
+                    if first_byte == 0x00 { return false; }
+                    if first_byte == 0xE5 { continue; }
+
+                    let attr = sector[offset + 11];
+                    if attr == 0x0F { continue; }
+                    if attr == 0x08 { continue; }
+                    if (attr & 0x10) != 0 { continue; }
+
+                    let ext0 = sector[offset + 8].to_ascii_uppercase();
+                    let ext1 = sector[offset + 9].to_ascii_uppercase();
+                    let ext2 = sector[offset + 10].to_ascii_uppercase();
+
+                    let is_gb = ext0 == b'G' && ext1 == b'B' && (ext2 == b' ' || ext2 == b'C');
+
+                    if is_gb {
+                        if rom_index == index {
+                            // Copy name (8 chars) + dot + ext (3 chars)
+                            let mut pos = 0;
+                            for j in 0..8 {
+                                let c = sector[offset + j];
+                                if c != b' ' {
+                                    name_buf[pos] = c;
+                                    pos += 1;
+                                }
+                            }
+                            name_buf[pos] = b'.';
+                            pos += 1;
+                            for j in 0..3 {
+                                let c = sector[offset + 8 + j];
+                                if c != b' ' {
+                                    name_buf[pos] = c;
+                                    pos += 1;
+                                }
+                            }
+                            while pos < 12 {
+                                name_buf[pos] = 0;
+                                pos += 1;
+                            }
+                            return true;
+                        }
+                        rom_index += 1;
+                    }
+                }
             }
+
+            current_cluster = match self.get_next_cluster(current_cluster) {
+                Ok(next) => next,
+                Err(_) => break,
+            };
         }
 
         false
+    }
+
+    /// Count ROM files in root directory
+    pub fn count_roms(&self) -> usize {
+        if !self.mounted { return 0; }
+
+        let mut sector = [0u8; SECTOR_SIZE];
+        let mut count = 0;
+        let mut current_cluster = self.root_cluster;
+
+        // Debug row 197: show root_cluster value
+        unsafe {
+            let vga = 0xA0000 as *mut u8;
+            core::ptr::write_volatile(vga.add(197 * 320), (self.root_cluster & 0xFF) as u8);
+            core::ptr::write_volatile(vga.add(197 * 320 + 1), ((self.root_cluster >> 8) & 0xFF) as u8);
+            core::ptr::write_volatile(vga.add(197 * 320 + 2), ((self.root_cluster >> 16) & 0xFF) as u8);
+        }
+
+        // Follow cluster chain for root directory
+        while current_cluster >= 2 && current_cluster < 0x0FFFFFF8 {
+            let cluster_lba = self.cluster_to_sector(current_cluster);
+
+            // Debug row 197: show cluster LBA
+            unsafe {
+                let vga = 0xA0000 as *mut u8;
+                core::ptr::write_volatile(vga.add(197 * 320 + 10), (cluster_lba & 0xFF) as u8);
+                core::ptr::write_volatile(vga.add(197 * 320 + 11), ((cluster_lba >> 8) & 0xFF) as u8);
+                core::ptr::write_volatile(vga.add(197 * 320 + 12), ((cluster_lba >> 16) & 0xFF) as u8);
+            }
+
+            for sector_offset in 0..self.sectors_per_cluster {
+                let read_result = self.read_sector(cluster_lba + sector_offset as u64, &mut sector);
+
+                // Debug row 198: show read result
+                unsafe {
+                    let vga = 0xA0000 as *mut u8;
+                    let color = if read_result.is_ok() { 0x0A } else { 0x04 };
+                    core::ptr::write_volatile(vga.add(198 * 320 + sector_offset as usize * 3), color);
+                }
+
+                if read_result.is_err() {
+                    return count;
+                }
+
+                // Debug row 199: show first 16 bytes of directory
+                unsafe {
+                    let vga = 0xA0000 as *mut u8;
+                    for i in 0..16 {
+                        core::ptr::write_volatile(vga.add(199 * 320 + i), sector[i]);
+                    }
+                }
+
+                for i in 0..16 {
+                    let offset = i * 32;
+                    let first_byte = sector[offset];
+
+                    if first_byte == 0x00 {
+                        // Debug: yellow pixel = hit end marker
+                        unsafe {
+                            let vga = 0xA0000 as *mut u8;
+                            core::ptr::write_volatile(vga.add(198 * 320 + 20), 0x0E);
+                        }
+                        return count;
+                    }
+                    if first_byte == 0xE5 { continue; }
+
+                    let attr = sector[offset + 11];
+                    if attr == 0x0F { continue; }
+                    if attr == 0x08 { continue; }
+                    if (attr & 0x10) != 0 { continue; }
+
+                    let ext0 = sector[offset + 8].to_ascii_uppercase();
+                    let ext1 = sector[offset + 9].to_ascii_uppercase();
+                    let ext2 = sector[offset + 10].to_ascii_uppercase();
+
+                    let is_gb = ext0 == b'G' && ext1 == b'B' && (ext2 == b' ' || ext2 == b'C');
+
+                    if is_gb {
+                        count += 1;
+                        // Debug: green pixel for each ROM found
+                        unsafe {
+                            let vga = 0xA0000 as *mut u8;
+                            core::ptr::write_volatile(vga.add(198 * 320 + 30 + count), 0x0A);
+                        }
+                    }
+                }
+            }
+
+            current_cluster = match self.get_next_cluster(current_cluster) {
+                Ok(next) => next,
+                Err(_) => break,
+            };
+        }
+
+        count
     }
 
     /// Read file data into buffer
     /// Returns bytes read
     pub fn read_file(&self, cluster: u32, size: u32, buffer: &mut [u8]) -> Result<usize, &'static str> {
         if !self.mounted { return Err("Not mounted"); }
+        if cluster < 2 { return Err("Invalid cluster"); }
 
         let to_read = (size as usize).min(buffer.len());
         let mut bytes_read = 0usize;
         let mut current_cluster = cluster;
-        let cluster_size = (self.bytes_per_sector * self.sectors_per_cluster) as usize;
 
         let mut sector_buf = [0u8; SECTOR_SIZE];
 
@@ -288,40 +408,6 @@ impl Fat32 {
         ]) & 0x0FFFFFFF;
 
         Ok(next)
-    }
-
-    /// Count ROM files in root directory
-    pub fn count_roms(&self) -> usize {
-        if !self.mounted { return 0; }
-
-        let mut sector = [0u8; SECTOR_SIZE];
-        let root_lba = self.cluster_to_sector(self.root_cluster);
-
-        if self.read_sector(root_lba, &mut sector).is_err() {
-            return 0;
-        }
-
-        let mut count = 0;
-
-        for i in 0..16 {
-            let offset = i * 32;
-            let first_byte = sector[offset];
-
-            if first_byte == 0x00 { break; }
-            if first_byte == 0xE5 { continue; }
-
-            let attr = sector[offset + 11];
-            if attr == 0x08 || attr == 0x0F { continue; }
-            if (attr & 0x10) != 0 { continue; }
-
-            let ext = &sector[offset + 8..offset + 11];
-            let is_gb = (ext[0] == b'G' || ext[0] == b'g') &&
-                (ext[1] == b'B' || ext[1] == b'b');
-
-            if is_gb { count += 1; }
-        }
-
-        count
     }
 }
 

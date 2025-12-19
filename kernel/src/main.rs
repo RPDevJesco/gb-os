@@ -18,11 +18,11 @@ mod event_chains;
 
 // GUI module (needed by drivers/init.rs even if not used)
 mod gui;
+mod storage;
+mod rom_browser;
 
 // GameBoy emulator
 mod gameboy;
-
-mod storage;
 
 use boot_info::BootInfo;
 use arch::x86::{gdt, idt};
@@ -117,6 +117,7 @@ unsafe fn draw_bar(x: isize, row: isize, color: u8, width: isize) {
 // ============================================================================
 // Kernel Main
 // ============================================================================
+
 #[no_mangle]
 extern "C" fn kernel_main(_boot_info_ptr: u32) -> ! {
     // Parse boot info from fixed address 0x500
@@ -141,16 +142,37 @@ extern "C" fn kernel_main(_boot_info_ptr: u32) -> ! {
     if storage_result.ata_devices > 0 {
         storage::test_read();
 
-        // Try to mount FAT32 and load ROM
-        if let Some((rom_ptr, rom_size)) = try_load_rom() {
-            // Clear screen first (dark green/gray like original GB)
-            clear_screen(0x00);
+        // Debug: show we're about to mount - yellow on row 198
+        unsafe {
+            let vga = 0xA0000 as *mut u8;
+            for i in 0..20 { core::ptr::write_volatile(vga.add(198 * 320 + i), 0x0E); }
+        }
 
-            // Draw Game Boy border
-            draw_gb_border();
+        // Mount FAT32
+        let mount_result = storage::fat32::mount(0);
 
-            // Run the emulator with loaded ROM
-            run_gameboy_emulator_with_rom(rom_ptr, rom_size);
+        // Debug: show mount result - green=ok, red=fail on row 198
+        unsafe {
+            let vga = 0xA0000 as *mut u8;
+            let color = if mount_result.is_ok() { 0x0A } else { 0x04 };
+            for i in 20..40 { core::ptr::write_volatile(vga.add(198 * 320 + i), color); }
+        }
+
+        if mount_result.is_ok() {
+            // Show ROM browser and get selection
+            if let Some(rom_index) = rom_browser::select_rom() {
+                // Load selected ROM
+                if let Some((rom_ptr, rom_size)) = load_rom(rom_index) {
+                    // Clear screen
+                    clear_screen(0x00);
+
+                    // Draw Game Boy border
+                    draw_gb_border();
+
+                    // Run emulator with selected ROM
+                    run_gameboy_emulator_with_rom(rom_ptr, rom_size);
+                }
+            }
         }
     }
 
@@ -160,28 +182,112 @@ extern "C" fn kernel_main(_boot_info_ptr: u32) -> ! {
     }
 }
 
+// ============================================================================
+// ROM Loading
+// ============================================================================
+
 // Static ROM buffer - must be outside the function to have stable address
 static mut ROM_BUFFER: [u8; 2 * 1024 * 1024] = [0; 2 * 1024 * 1024]; // 2MB max
 
-/// Try to load first ROM from FAT32
-fn try_load_rom() -> Option<(*const u8, usize)> {
-    // Mount FAT32
-    if storage::fat32::mount(0).is_err() {
-        return None;
+/// Load ROM at given index from FAT32
+/// Returns (pointer to ROM data, size) if successful
+fn load_rom(index: usize) -> Option<(*const u8, usize)> {
+    // Debug: show we're trying to load
+    unsafe {
+        let vga = 0xA0000 as *mut u8;
+        // Yellow bar = starting load
+        for i in 0..50 {
+            core::ptr::write_volatile(vga.add(190 * 320 + i), 0x0E);
+        }
     }
 
-    // Find first ROM
-    let (cluster, size) = storage::fat32::get_fs().find_rom(0)?;
+    // Find ROM at index
+    let (cluster, size) = match storage::fat32::get_fs().find_rom(index) {
+        Some(info) => info,
+        None => {
+            // Red bar = ROM not found
+            unsafe {
+                let vga = 0xA0000 as *mut u8;
+                for i in 0..50 {
+                    core::ptr::write_volatile(vga.add(190 * 320 + i), 0x04);
+                }
+            }
+            return None;
+        }
+    };
+
+    // Debug: show cluster and size
+    unsafe {
+        let vga = 0xA0000 as *mut u8;
+        // Cyan bar = found ROM info
+        for i in 50..100 {
+            core::ptr::write_volatile(vga.add(190 * 320 + i), 0x0B);
+        }
+        // Show cluster as color
+        core::ptr::write_volatile(vga.add(191 * 320), (cluster & 0xFF) as u8);
+        core::ptr::write_volatile(vga.add(191 * 320 + 1), ((cluster >> 8) & 0xFF) as u8);
+        // Show size bytes
+        core::ptr::write_volatile(vga.add(191 * 320 + 5), (size & 0xFF) as u8);
+        core::ptr::write_volatile(vga.add(191 * 320 + 6), ((size >> 8) & 0xFF) as u8);
+        core::ptr::write_volatile(vga.add(191 * 320 + 7), ((size >> 16) & 0xFF) as u8);
+    }
 
     // Load ROM data into static buffer
     let rom_buf = unsafe { &mut ROM_BUFFER };
 
     match storage::fat32::get_fs().read_file(cluster, size, rom_buf) {
         Ok(bytes_read) => {
-            // Return pointer and size
+            // Green bar = success
+            unsafe {
+                let vga = 0xA0000 as *mut u8;
+                for i in 100..150 {
+                    core::ptr::write_volatile(vga.add(190 * 320 + i), 0x0A);
+                }
+                // Show bytes read
+                core::ptr::write_volatile(vga.add(191 * 320 + 10), (bytes_read & 0xFF) as u8);
+                core::ptr::write_volatile(vga.add(191 * 320 + 11), ((bytes_read >> 8) & 0xFF) as u8);
+            }
+
+            // Verify we got some data
+            if bytes_read == 0 {
+                unsafe {
+                    let vga = 0xA0000 as *mut u8;
+                    for i in 150..200 {
+                        core::ptr::write_volatile(vga.add(190 * 320 + i), 0x04); // Red = 0 bytes
+                    }
+                }
+                return None;
+            }
+
+            // Debug: show first 16 bytes of ROM as colors on row 192
+            unsafe {
+                let vga = 0xA0000 as *mut u8;
+                for i in 0..16 {
+                    core::ptr::write_volatile(vga.add(192 * 320 + i * 4), rom_buf[i]);
+                    core::ptr::write_volatile(vga.add(192 * 320 + i * 4 + 1), rom_buf[i]);
+                    core::ptr::write_volatile(vga.add(192 * 320 + i * 4 + 2), rom_buf[i]);
+                }
+            }
+
+            // Wait 2 seconds so user can see debug output
+            for _ in 0..2000 {
+                for _ in 0..10000 {
+                    unsafe { core::arch::asm!("nop"); }
+                }
+            }
+
             Some((rom_buf.as_ptr(), bytes_read))
         }
-        Err(_) => None,
+        Err(_) => {
+            // Magenta bar = read error
+            unsafe {
+                let vga = 0xA0000 as *mut u8;
+                for i in 100..150 {
+                    core::ptr::write_volatile(vga.add(190 * 320 + i), 0x05);
+                }
+            }
+            None
+        }
     }
 }
 
@@ -298,71 +404,6 @@ fn blit_gb_to_vga(gb_data: &[u8]) {
 // ============================================================================
 // GameBoy Emulator Integration
 // ============================================================================
-fn run_gameboy_emulator_with_rom(rom_ptr: *const u8, rom_size: usize) -> ! {
-    use alloc::vec::Vec;
-
-    // Initialize PIT for accurate timing (1000 Hz = 1ms per tick)
-    arch::x86::pit::set_frequency(1000);
-
-    // Create ROM vec from loaded data
-    let rom_data: Vec<u8> = unsafe {
-        let rom_slice = core::slice::from_raw_parts(rom_ptr, rom_size);
-        rom_slice.to_vec()
-    };
-
-    // Create emulator
-    let mut device = match gameboy::Device::new_cgb(rom_data, false) {
-        Ok(d) => d,
-        Err(_e) => {
-            show_emulator_error();
-            loop { unsafe { core::arch::asm!("hlt"); } }
-        }
-    };
-
-    // Create input handler
-    let mut input_state = gameboy::input::InputState::new();
-
-    // Frame timing: 59.7 fps = ~16.75ms per frame
-    // At 1000 Hz, that's ~17 ticks per frame
-    const TICKS_PER_FRAME: u32 = 17;
-    let mut last_frame_ticks = arch::x86::pit::ticks();
-
-    // Main emulation loop
-    const CYCLES_PER_FRAME: u32 = 70224;  // ~59.7 FPS
-
-    loop {
-        // Run one frame of emulation
-        let mut cycles: u32 = 0;
-        while cycles < CYCLES_PER_FRAME {
-            cycles += device.do_cycle();
-        }
-
-        // Blit to screen if GPU updated
-        if device.check_and_reset_gpu_updated() {
-            let gpu_data = device.get_gpu_data();
-            blit_gb_to_vga(gpu_data);
-        }
-
-        // Process keyboard input
-        while let Some(key) = drivers::keyboard::get_key() {
-            if let Some(gb_key) = input_state.map_keycode(key.keycode) {
-                if key.pressed {
-                    device.keydown(gb_key);
-                } else {
-                    device.keyup(gb_key);
-                }
-            }
-        }
-
-        // Frame timing - wait until next frame time
-        let target_ticks = last_frame_ticks.wrapping_add(TICKS_PER_FRAME);
-        while arch::x86::pit::ticks().wrapping_sub(target_ticks) > 0x8000_0000 {
-            // Use HLT for power efficiency while waiting
-            unsafe { core::arch::asm!("hlt"); }
-        }
-        last_frame_ticks = target_ticks;
-    }
-}
 
 fn run_gameboy_emulator() -> ! {
     use alloc::vec::Vec;
@@ -436,6 +477,71 @@ fn run_gameboy_emulator() -> ! {
         let target_ticks = last_frame_ticks.wrapping_add(TICKS_PER_FRAME);
         while arch::x86::pit::ticks().wrapping_sub(target_ticks) > 0x8000_0000 {
             // Use HLT for power efficiency while waiting
+            unsafe { core::arch::asm!("hlt"); }
+        }
+        last_frame_ticks = target_ticks;
+    }
+}
+
+/// Run emulator with ROM loaded from FAT32
+fn run_gameboy_emulator_with_rom(rom_ptr: *const u8, rom_size: usize) -> ! {
+    use alloc::vec::Vec;
+
+    // Initialize PIT for accurate timing (1000 Hz = 1ms per tick)
+    arch::x86::pit::set_frequency(1000);
+
+    // Create ROM vec from loaded data
+    let rom_data: Vec<u8> = unsafe {
+        let rom_slice = core::slice::from_raw_parts(rom_ptr, rom_size);
+        rom_slice.to_vec()
+    };
+
+    // Create emulator
+    let mut device = match gameboy::Device::new_cgb(rom_data, false) {
+        Ok(d) => d,
+        Err(_e) => {
+            show_emulator_error();
+            loop { unsafe { core::arch::asm!("hlt"); } }
+        }
+    };
+
+    // Create input handler
+    let input_state = gameboy::input::InputState::new();
+
+    // Frame timing: 59.7 fps = ~16.75ms per frame
+    const TICKS_PER_FRAME: u32 = 17;
+    let mut last_frame_ticks = arch::x86::pit::ticks();
+
+    // Main emulation loop
+    const CYCLES_PER_FRAME: u32 = 70224;
+
+    loop {
+        // Run one frame of emulation
+        let mut cycles: u32 = 0;
+        while cycles < CYCLES_PER_FRAME {
+            cycles += device.do_cycle();
+        }
+
+        // Blit to screen if GPU updated
+        if device.check_and_reset_gpu_updated() {
+            let gpu_data = device.get_gpu_data();
+            blit_gb_to_vga(gpu_data);
+        }
+
+        // Process keyboard input
+        while let Some(key) = drivers::keyboard::get_key() {
+            if let Some(gb_key) = input_state.map_keycode(key.keycode) {
+                if key.pressed {
+                    device.keydown(gb_key);
+                } else {
+                    device.keyup(gb_key);
+                }
+            }
+        }
+
+        // Frame timing - wait until next frame time
+        let target_ticks = last_frame_ticks.wrapping_add(TICKS_PER_FRAME);
+        while arch::x86::pit::ticks().wrapping_sub(target_ticks) > 0x8000_0000 {
             unsafe { core::arch::asm!("hlt"); }
         }
         last_frame_ticks = target_ticks;
