@@ -5,6 +5,7 @@
 
 pub mod pci;
 pub mod ata;
+pub mod fat32;
 
 use crate::arch::x86::io::outb;
 
@@ -265,4 +266,108 @@ pub fn read_sectors(
         .ok_or("Invalid device index")?;
 
     ata::read_sectors(device, lba, count, buffer)
+}
+
+// =============================================================================
+// FAT32 Integration
+// =============================================================================
+
+/// Mount FAT32 filesystem from first ATA device
+/// Returns true if successful
+pub fn mount_fat32() -> bool {
+    // Debug: show we're starting
+    debug_bar(9, 0, colors::YELLOW);  // Starting mount
+
+    // Show device count
+    let count = ata::device_count();
+    debug_hex(11, count as u32);
+
+    // Find first ATA device index
+    let device_index = match find_ata_device_index() {
+        Some(idx) => {
+            debug_bar(9, 0, colors::GREEN);  // Found device
+            debug_hex(12, idx as u32);  // Show which index
+            idx
+        }
+        None => {
+            debug_bar(9, 0, colors::RED);  // No ATA device found
+            return false;
+        }
+    };
+
+    debug_bar(9, 1, colors::YELLOW);  // Found device, attempting mount
+
+    match fat32::mount(device_index) {
+        Ok(()) => {
+            debug_bar(9, 1, colors::GREEN);
+            debug_bar(9, 2, colors::GREEN);
+            true
+        }
+        Err(_) => {
+            debug_bar(9, 1, colors::RED);
+            false
+        }
+    }
+}
+
+/// Find the index of the first ATA device
+fn find_ata_device_index() -> Option<usize> {
+    // Debug: check each slot
+    for i in 0..4 {
+        // Show we're checking this slot
+        debug_bar(13 + i, 0, colors::YELLOW);
+
+        if let Some(device) = ata::get_device(i) {
+            // Show device type
+            let type_val = match device.device_type {
+                ata::DeviceType::None => 0,
+                ata::DeviceType::Unknown => 1,
+                ata::DeviceType::Ata => 2,
+                ata::DeviceType::Atapi => 3,
+            };
+            debug_hex(13 + i, type_val);
+
+            if device.device_type == ata::DeviceType::Ata {
+                debug_bar(13 + i, 0, colors::GREEN);  // Found ATA!
+                return Some(i);
+            } else {
+                debug_bar(13 + i, 0, colors::BROWN);  // Not ATA
+            }
+        } else {
+            debug_bar(13 + i, 0, colors::DARK_GRAY);  // No device in slot
+        }
+    }
+    None
+}
+
+/// List ROM files (.gb, .gbc) in root directory
+/// Returns count of files found
+pub fn list_rom_files() -> usize {
+    if !fat32::is_mounted() {
+        return 0;
+    }
+
+    let count = fat32::get_fs().count_roms();
+
+    // Show count on debug bar
+    debug_bar(9, 3, if count > 0 { colors::GREEN } else { colors::BROWN });
+    debug_hex(9, count as u32);
+
+    count
+}
+
+/// Test FAT32 - mount and verify ROM detection
+pub fn test_fat32() -> bool {
+    debug_bar(9, 0, colors::YELLOW);
+
+    if !mount_fat32() {
+        return false;
+    }
+
+    let rom_count = fat32::get_fs().count_roms();
+
+    debug_bar(9, 3, if rom_count > 0 { colors::GREEN } else { colors::BROWN });
+    debug_hex(9, rom_count as u32);
+
+    rom_count > 0
 }

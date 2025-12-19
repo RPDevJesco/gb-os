@@ -304,9 +304,7 @@ fn wait_not_busy(channel: Channel, timeout: u32) -> bool {
             return true;
         }
         // Small spin
-        for _ in 0..10 {
-            core::hint::spin_loop();
-        }
+        core::hint::spin_loop();
     }
     false
 }
@@ -376,8 +374,8 @@ fn select_drive(channel: Channel, drive: Drive) -> bool {
     // Wait 400ns for drive to respond
     io_delay(channel);
 
-    // Wait for not busy
-    wait_not_busy(channel, 10000)
+    // Wait for not busy - short timeout
+    wait_not_busy(channel, 10_000)
 }
 
 // =============================================================================
@@ -393,7 +391,7 @@ pub fn reset_channel(channel: Channel) {
         outb(control, 0x06);
 
         // Wait at least 5 microseconds
-        for _ in 0..1000 {
+        for _ in 0..2000 {
             core::hint::spin_loop();
         }
 
@@ -401,11 +399,9 @@ pub fn reset_channel(channel: Channel) {
         outb(control, 0x02);
     }
 
-    // Wait for reset to complete (can take up to 31 seconds for some drives!)
-    // We'll wait up to 5 seconds
-    wait_not_busy(channel, 5_000_000);
+    // Brief wait for reset to complete (don't hang on empty channels)
+    wait_not_busy(channel, 100_000);
 
-    // Additional delay
     io_delay(channel);
 }
 
@@ -479,33 +475,51 @@ fn try_identify_ata(channel: Channel) -> bool {
 
     // Check immediate response
     let status = read_alt_status(channel);
-    if status == 0 {
+    if status == 0 || status == 0xFF {
         return false;  // No device
     }
 
-    // Wait for not busy
-    if !wait_not_busy(channel, TIMEOUT_IDENTIFY) {
+    // Wait for not busy (short timeout)
+    if !wait_not_busy(channel, 50_000) {
         return false;
     }
 
-    // Check for ATAPI (might have changed signature)
+    // Check for ATAPI signature change
     let lba_mid = unsafe { inb(base + 4) };
     let lba_hi = unsafe { inb(base + 5) };
-    if lba_mid != 0 || lba_hi != 0 {
-        return false;  // ATAPI device
+
+    // If ATAPI signature appeared, this is CD-ROM
+    if lba_mid == 0x14 && lba_hi == 0xEB {
+        return false;  // ATAPI device, not ATA
     }
 
-    // Check for DRQ
+    // Check for DRQ or ready status
     let status = read_status(channel);
-    if (status & status::ERR) != 0 {
-        return false;
-    }
+
+    // If error, might still be ATA - some drives set error on IDENTIFY
+    // Check if DRQ is set (data ready)
     if (status & status::DRQ) != 0 {
         // Drain the data (256 words = 512 bytes)
         for _ in 0..256 {
             let _ = unsafe { inw(base) };
         }
         return true;
+    }
+
+    // Some drives need more time - wait for DRQ
+    for _ in 0..50_000 {
+        let status = read_status(channel);
+        if (status & status::DRQ) != 0 {
+            // Drain the data
+            for _ in 0..256 {
+                let _ = unsafe { inw(base) };
+            }
+            return true;
+        }
+        if (status & status::ERR) != 0 {
+            break;  // Error, give up
+        }
+        core::hint::spin_loop();
     }
 
     false
@@ -658,8 +672,27 @@ fn parse_identify_data(device: &mut AtaDevice, data: &[u16; 256]) {
 
 /// Initialize ATA subsystem and detect all devices
 pub fn init() -> usize {
-    // Debug indicator - starting ATA init
-    draw_debug_bar(0, 0x0B);  // Cyan = starting
+    // Debug layout (rows 1-4 of VGA):
+    // Row 1: Primary Master status
+    // Row 2: Primary Slave status
+    // Row 3: Secondary Master status
+    // Row 4: Secondary Slave status
+
+    // Mark init started
+    draw_debug_pixel(0, 90, 0x0F);  // White = starting
+
+    // FIRST: Quick check if IDE channels exist at all
+    // Read status from both channels - 0xFF means floating bus (nothing there)
+    let pri_status = unsafe { inb(primary::STATUS) };
+    let sec_status = unsafe { inb(secondary::STATUS) };
+
+    draw_debug_byte(0, 25, pri_status);
+    draw_debug_byte(0, 27, sec_status);
+
+    // Mark all rows as starting
+    for row in 1..=4 {
+        draw_debug_pixel(row, 0, 0x0F);
+    }
 
     unsafe {
         ATA_DEVICE_COUNT = 0;
@@ -667,37 +700,143 @@ pub fn init() -> usize {
 
     let mut count = 0;
 
-    // Check each channel and drive
+    // Check each channel
     for (ch_idx, channel) in [Channel::Primary, Channel::Secondary].iter().enumerate() {
-        // Debug: which channel
-        draw_debug_bar(ch_idx + 1, 0x0E);  // Yellow = checking channel
+        let base = channel.base_port();
+        let ch_marker_col = 100 + ch_idx * 20;
 
-        // Soft reset the channel first
-        reset_channel(*channel);
+        draw_debug_pixel(0, ch_marker_col, 0x0E);  // Yellow = checking channel
 
+        // Quick floating bus check - if 0xFF, channel is empty
+        let quick_status = unsafe { inb(base + 7) };
+        if quick_status == 0xFF {
+            // No controller or nothing connected - skip entire channel
+            draw_debug_pixel(0, ch_marker_col, 0x08);  // Gray = empty channel
+            let reset_row = ch_idx * 2 + 1;
+            draw_debug_cell(reset_row, 0, 0x08);  // Gray
+            draw_debug_cell(reset_row + 1, 0, 0x08);  // Gray for slave too
+            continue;
+        }
+
+        // Channel exists - check if BIOS initialized it
+        let reset_row = ch_idx * 2 + 1;
+        let needs_reset = quick_status == 0x00 || (quick_status & 0x80) != 0;  // 0x00 or BSY stuck
+
+        if needs_reset {
+            draw_debug_cell(reset_row, 0, 0x0E);  // Yellow = resetting
+            reset_channel(*channel);
+            draw_debug_cell(reset_row, 0, 0x0A);  // Green = reset done
+        } else {
+            draw_debug_cell(reset_row, 0, 0x0B);  // Cyan = BIOS already init
+        }
+
+        draw_debug_pixel(0, ch_marker_col, 0x0A);  // Green = channel OK
+
+        // Check each drive on this channel
         for (drv_idx, drive) in [Drive::Master, Drive::Slave].iter().enumerate() {
             let idx = ch_idx * 2 + drv_idx;
+            let row = idx + 1;
 
-            // Detect device type
-            let device_type = detect_device_type(*channel, *drive);
+            draw_debug_pixel(0, ch_marker_col + 4 + drv_idx * 2, 0x0E);
+            draw_debug_cell(row, 1, 0x0E);  // Yellow = selecting
 
-            if device_type == DeviceType::None {
+            // Select drive
+            unsafe { outb(base + 6, drive.select_byte()); }
+            io_delay(*channel);
+            io_delay(*channel);
+
+            // Quick check after select
+            let status = unsafe { inb(base + 7) };
+            draw_debug_byte(row, 10, status);
+
+            // Check for no device patterns
+            if status == 0xFF || status == 0x00 || status == 0x7F {
+                draw_debug_cell(row, 1, 0x08);  // Gray = no device
+                draw_debug_pixel(0, ch_marker_col + 4 + drv_idx * 2, 0x08);
                 continue;
             }
 
-            // Create device entry
+            // Wait briefly for BSY to clear (short timeout)
+            if (status & status::BSY) != 0 {
+                if !wait_not_busy(*channel, 20_000) {
+                    draw_debug_cell(row, 1, 0x06);  // Brown = busy timeout
+                    draw_debug_pixel(0, ch_marker_col + 4 + drv_idx * 2, 0x06);
+                    continue;
+                }
+            }
+
+            draw_debug_cell(row, 1, 0x0A);  // Green = selected
+
+            // Read signature
+            let final_status = read_status(*channel);
+            let lba_mid = unsafe { inb(base + 4) };
+            let lba_hi = unsafe { inb(base + 5) };
+
+            draw_debug_byte(row, 6, final_status);
+            draw_debug_byte(row, 7, lba_mid);
+            draw_debug_byte(row, 8, lba_hi);
+
+            // Determine device type - try IDENTIFY command first
+            // Some drives don't have proper signature bytes after BIOS init
+            let device_type = if lba_mid == 0x14 && lba_hi == 0xEB {
+                // ATAPI signature - definitely CD/DVD
+                DeviceType::Atapi
+            } else if lba_mid == 0x3C && lba_hi == 0xC3 {
+                // SATA signature
+                DeviceType::Ata
+            } else {
+                // Try IDENTIFY command - works for most HDDs
+                if try_identify_ata(*channel) {
+                    DeviceType::Ata
+                } else if lba_mid == 0x14 || lba_hi == 0xEB {
+                    // Partial ATAPI signature
+                    DeviceType::Atapi
+                } else if try_identify_atapi(*channel) {
+                    DeviceType::Atapi
+                } else if final_status != 0 && final_status != 0xFF {
+                    // Something is responding but not identifying
+                    // Could be a very old drive or unusual hardware
+                    DeviceType::Unknown
+                } else {
+                    DeviceType::None
+                }
+            };
+
+            let type_color = match device_type {
+                DeviceType::None => 0x08,
+                DeviceType::Unknown => 0x06,
+                DeviceType::Ata => 0x0A,
+                DeviceType::Atapi => 0x0B,
+            };
+            draw_debug_cell(row, 3, type_color);
+
+            if device_type == DeviceType::None {
+                draw_debug_cell(row, 2, 0x08);
+                draw_debug_pixel(0, ch_marker_col + 4 + drv_idx * 2, 0x08);
+                continue;
+            }
+
+            draw_debug_cell(row, 2, 0x0A);
+
+            // Create and identify device
             let mut device = AtaDevice::empty();
             device.channel = *channel;
             device.drive = *drive;
             device.device_type = device_type;
 
-            // Try to identify it
-            if device_type == DeviceType::Ata || device_type == DeviceType::Atapi {
-                if identify_device(&mut device) {
-                    // Debug: found a device
-                    draw_debug_bar(ch_idx + 1, 0x0A);  // Green = found device
+            draw_debug_cell(row, 4, 0x0E);
+            if identify_device(&mut device) {
+                draw_debug_cell(row, 4, 0x0A);
+                if device_type == DeviceType::Ata {
+                    let gb = (device.capacity_mb() / 1024) as u8;
+                    draw_debug_byte(row, 9, gb);
                 }
+            } else {
+                draw_debug_cell(row, 4, 0x06);
             }
+
+            draw_debug_cell(row, 5, type_color);
+            draw_debug_pixel(0, ch_marker_col + 4 + drv_idx * 2, type_color);
 
             unsafe {
                 ATA_DEVICES[idx] = device;
@@ -707,10 +846,58 @@ pub fn init() -> usize {
         }
     }
 
-    // Debug indicator - done
-    draw_debug_bar(4, if count > 0 { 0x0A } else { 0x04 });  // Green or Red
+    // Summary
+    draw_debug_cell(5, 0, if count > 0 { 0x0A } else { 0x04 });
+    draw_debug_byte(5, 1, count as u8);
+    draw_debug_pixel(0, 180, 0x0F);  // White = complete
 
     count
+}
+
+/// Draw a single debug pixel at row/x position
+fn draw_debug_pixel(row: usize, x: usize, color: u8) {
+    unsafe {
+        let vga = 0xA0000 as *mut u8;
+        let offset = row * 320 + x;
+        core::ptr::write_volatile(vga.add(offset), color);
+    }
+}
+
+/// Draw a debug cell (6 pixels wide) at row/column
+fn draw_debug_cell(row: usize, col: usize, color: u8) {
+    unsafe {
+        let vga = 0xA0000 as *mut u8;
+        let row_offset = row * 320;
+        let col_offset = col * 8;
+        for i in 0..6 {
+            core::ptr::write_volatile(vga.add(row_offset + col_offset + i), color);
+        }
+    }
+}
+
+/// Draw a byte value as two colored cells (hex nibbles)
+fn draw_debug_byte(row: usize, col: usize, value: u8) {
+    let hi = (value >> 4) & 0x0F;
+    let lo = value & 0x0F;
+
+    // Color code: 0=black, 1-9=blues/greens, A-F=reds/magentas
+    let hi_color = if hi == 0 { 0x08 } else { 0x10 + hi };
+    let lo_color = if lo == 0 { 0x08 } else { 0x10 + lo };
+
+    unsafe {
+        let vga = 0xA0000 as *mut u8;
+        let row_offset = row * 320;
+        let col_offset = col * 8;
+
+        // High nibble (3 pixels)
+        for i in 0..3 {
+            core::ptr::write_volatile(vga.add(row_offset + col_offset + i), hi_color);
+        }
+        // Low nibble (3 pixels)
+        for i in 3..6 {
+            core::ptr::write_volatile(vga.add(row_offset + col_offset + i), lo_color);
+        }
+    }
 }
 
 /// Get number of detected devices
@@ -859,15 +1046,8 @@ pub fn read_sectors(
 // Debug Helper
 // =============================================================================
 
-/// Draw a debug bar for ATA progress
+/// Draw a debug bar for ATA progress (legacy - kept for compatibility)
+#[allow(dead_code)]
 fn draw_debug_bar(stage: usize, color: u8) {
-    unsafe {
-        let vga = 0xA0000 as *mut u8;
-        // Draw on row 1 (offset 320) to not conflict with PCI debug
-        let row_offset = 320;
-        let start = row_offset + stage * 10;
-        for i in 0..8 {
-            core::ptr::write_volatile(vga.add(start + i), color);
-        }
-    }
+    draw_debug_cell(6, stage, color);
 }
