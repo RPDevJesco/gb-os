@@ -5,18 +5,16 @@
 //!
 //! # Display Layout (320x200 mode 13h)
 //!
-//! The Game Boy screen is 160x144. When centered or left-aligned, this leaves
-//! space for overlay information. Common layouts:
+//! The Game Boy screen is 160x144 centered at x=80. This leaves
+//! 80-pixel margins on each side for overlay information.
 //!
 //! ```text
-//! +------------------+--------+
-//! |                  |        |
-//! |   Game Screen    | Party  |
-//! |     160x144      | Info   |
-//! |                  |        |
-//! +------------------+--------+
-//! |     Status Bar / Info     |
-//! +---------------------------+
+//! +------+------------------+------+
+//! |      |                  |      |
+//! | Left |   Game Screen    | Right|
+//! | Info |     160x144      | Info |
+//! |      |   (at x=80)      |      |
+//! +------+------------------+------+
 //! ```
 
 use crate::overlay::ram_layout::{Game, RamReader, Pokemon, TrainerData, PartyState, decode_text, StatusCondition};

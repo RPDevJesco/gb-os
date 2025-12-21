@@ -1,55 +1,12 @@
-//! GUI Subsystem - Plan 9 rio-style windowing
+//! GUI Subsystem
 //!
-//! Provides a simple, clean graphical interface inspired by Plan 9's rio.
+//! Provides a simple, clean graphical interface for primitive graphics events.
 //!
-//! # EventChain Integration
-//!
-//! Discrete window lifecycle events (create, destroy, focus, z-order) are
-//! dispatched through the Window Manager EventChain for policy enforcement
-//! and audit logging.
-//!
-//! Continuous events (mouse tracking, frame rendering) are handled directly
-//! for performance reasons.
 
 pub mod font;
 pub mod framebuffer;
-pub mod window;
-pub mod desktop;
-pub mod theme;
-pub mod wm_events;
 
 pub use framebuffer::Framebuffer;
-pub use window::Window;
-pub use desktop::Desktop;
-pub use theme::Theme;
-pub use wm_events::WmEventDispatcher;
-
-/// GUI Event types
-#[derive(Debug, Clone, Copy)]
-pub enum GuiEvent {
-    /// Mouse moved to position
-    MouseMove { x: i32, y: i32 },
-    /// Mouse button pressed
-    MouseDown { x: i32, y: i32, button: MouseButton },
-    /// Mouse button released
-    MouseUp { x: i32, y: i32, button: MouseButton },
-    /// Key pressed
-    KeyDown { key: char, scancode: u8 },
-    /// Key released
-    KeyUp { key: char, scancode: u8 },
-    /// Window needs redraw
-    Redraw,
-    /// Timer tick
-    Tick,
-}
-
-/// Mouse buttons
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MouseButton {
-    Left,
-    Middle,
-    Right,
-}
 
 /// Rectangle structure
 #[derive(Debug, Clone, Copy)]
