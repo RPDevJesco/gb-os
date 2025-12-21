@@ -8,6 +8,7 @@ extern crate alloc;
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
+use super::mmu::MMU;
 use super::cpu::CPU;
 use super::gbmode::GbMode;
 use super::keypad::KeypadKey;
@@ -20,6 +21,10 @@ pub struct Device {
 }
 
 impl Device {
+    pub fn mmu(&self) -> &MMU {
+        &self.cpu.mmu
+    }
+
     /// Create a classic GameBoy from ROM data
     pub fn new(romdata: Vec<u8>, skip_checksum: bool) -> StrResult<Device> {
         let cart = mbc::get_mbc(romdata, skip_checksum)?;
@@ -97,5 +102,15 @@ impl Device {
     /// Write byte to memory (for debugging)
     pub fn write_byte(&mut self, address: u16, byte: u8) {
         self.cpu.write_byte(address, byte);
+    }
+
+    /// Read byte without side effects (for overlay/debugging)
+    pub fn peek(&self, address: u16) -> u8 {
+        self.cpu.mmu.peek(address)
+    }
+
+    /// Read word without side effects (for overlay/debugging)
+    pub fn peek_word(&self, address: u16) -> u16 {
+        self.cpu.mmu.peek_word(address)
     }
 }
