@@ -164,20 +164,28 @@ pub fn char_to_index(ch: u8) -> usize {
     }
 }
 
-/// Get the bitmap data for a character
+/// Get the bitmap data for a character as a fixed-size array (by value)
 ///
 /// # Arguments
 /// * `ch` - ASCII character byte
 ///
 /// # Returns
-/// Slice of 8 bytes representing the character bitmap
+/// Array of 8 bytes representing the character bitmap (copied by value)
 #[inline(always)]
-pub fn get_char_bitmap(ch: u8) -> &'static [u8] {
+pub fn get_char_bitmap(ch: u8) -> [u8; 8] {
     let index = char_to_index(ch);
     let start = index * CHAR_HEIGHT;
-    // Safety: char_to_index always returns 0-44, so start is 0-352
-    // and start + CHAR_HEIGHT is 8-360, which is within FONT_DATA bounds (360 bytes)
-    unsafe { FONT_DATA.get_unchecked(start..start + CHAR_HEIGHT) }
+    // Copy the 8 bytes into a fixed-size array
+    [
+        FONT_DATA[start],
+        FONT_DATA[start + 1],
+        FONT_DATA[start + 2],
+        FONT_DATA[start + 3],
+        FONT_DATA[start + 4],
+        FONT_DATA[start + 5],
+        FONT_DATA[start + 6],
+        FONT_DATA[start + 7],
+    ]
 }
 
 // ============================================================================
@@ -190,10 +198,10 @@ fn draw_bitmap_to_buffer(
     buffer: &mut [u8],
     x: usize,
     y: usize,
-    bitmap: &[u8],
+    bitmap: [u8; 8],
     color: u8,
 ) {
-    for (row, &bits) in bitmap.iter().enumerate().take(CHAR_HEIGHT) {
+    for (row, bits) in bitmap.iter().enumerate().take(CHAR_HEIGHT) {
         let py = y + row;
         for col in 0..CHAR_WIDTH {
             if (bits >> (7 - col)) & 1 != 0 {
@@ -213,11 +221,11 @@ fn draw_bitmap_to_buffer_bg(
     buffer: &mut [u8],
     x: usize,
     y: usize,
-    bitmap: &[u8],
+    bitmap: [u8; 8],
     fg: u8,
     bg: u8,
 ) {
-    for (row, &bits) in bitmap.iter().enumerate().take(CHAR_HEIGHT) {
+    for (row, bits) in bitmap.iter().enumerate().take(CHAR_HEIGHT) {
         let py = y + row;
         for col in 0..CHAR_WIDTH {
             let px = x + col;

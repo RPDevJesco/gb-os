@@ -164,17 +164,20 @@ pub fn draw_thick_border(x: usize, y: usize, w: usize, h: usize, thickness: usiz
     fill_rect(x + w - thickness, y, thickness, h, color);
 }
 
-/// Draw an 8-bit bitmap row by row (for font rendering, sprites, etc.)
+/// Draw an 8x8 bitmap (for font rendering, sprites, etc.)
+///
+/// Takes bitmap by value as [u8; 8] to avoid slice pointer issues
+/// in bare-metal environments.
 ///
 /// # Arguments
 /// * `x` - Left edge X coordinate
 /// * `y` - Top edge Y coordinate
-/// * `bitmap` - Slice of bytes, one per row, MSB is leftmost pixel
+/// * `bitmap` - Array of 8 bytes, one per row, MSB is leftmost pixel
 /// * `color` - VGA palette index for set pixels (0-255)
 #[inline(always)]
-pub fn draw_bitmap_8x8(x: usize, y: usize, bitmap: &[u8], color: u8) {
+pub fn draw_bitmap_8x8(x: usize, y: usize, bitmap: [u8; 8], color: u8) {
     unsafe {
-        for (row, &bits) in bitmap.iter().enumerate().take(8) {
+        for (row, bits) in bitmap.iter().enumerate() {
             let py = y + row;
             if py >= SCREEN_HEIGHT {
                 continue;
