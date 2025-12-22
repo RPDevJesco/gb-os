@@ -4,132 +4,29 @@
 //! the user to select which one to boot.
 
 use crate::drivers::keyboard::{self, KeyCode};
+use crate::graphics::vga_mode13h::{self, colors, SCREEN_WIDTH};
+use crate::gui::font_8x8;
 use crate::storage::fat32;
 
 // ============================================================================
-// Constants
+// UI Layout Constants
 // ============================================================================
 
-/// VGA Mode 13h parameters
-const SCREEN_WIDTH: usize = 320;
-const SCREEN_HEIGHT: usize = 200;
-const VGA_ADDR: *mut u8 = 0xA0000 as *mut u8;
-
-/// UI Layout
 const TITLE_Y: usize = 15;
 const LIST_START_Y: usize = 45;
 const LIST_ITEM_HEIGHT: usize = 12;
 const LIST_X: usize = 40;
 const MAX_VISIBLE_ITEMS: usize = 10;
 
-/// Colors (VGA palette indices)
-mod colors {
-    pub const BLACK: u8 = 0x00;
-    pub const DARK_GREEN: u8 = 0x02;
-    pub const GREEN: u8 = 0x0A;
-    pub const LIGHT_GREEN: u8 = 0x2A;  // GB screen green
-    pub const DARK_GRAY: u8 = 0x08;
-    pub const LIGHT_GRAY: u8 = 0x07;
-    pub const WHITE: u8 = 0x0F;
-    pub const HIGHLIGHT_BG: u8 = 0x02;  // Dark green background for selection
-}
+/// Border dimensions
+const BORDER_X: usize = 20;
+const BORDER_Y: usize = 10;
+const BORDER_W: usize = 280;
+const BORDER_H: usize = 180;
+const BORDER_THICKNESS: usize = 3;
 
-/// Simple 8x8 font (subset - uppercase, numbers, symbols)
-/// Each character is 8 bytes, one per row, MSB is leftmost pixel
-/// Characters: A-Z (0-25), 0-9 (26-35), space (36), . (37), : (38), / (39), - (40), > (41), ^ (42), v (43), _ (44)
-#[rustfmt::skip]
-static FONT_DATA: [u8; 45 * 8] = [
-    // A
-    0x18, 0x3C, 0x66, 0x66, 0x7E, 0x66, 0x66, 0x00,
-    // B
-    0x7C, 0x66, 0x66, 0x7C, 0x66, 0x66, 0x7C, 0x00,
-    // C
-    0x3C, 0x66, 0x60, 0x60, 0x60, 0x66, 0x3C, 0x00,
-    // D
-    0x78, 0x6C, 0x66, 0x66, 0x66, 0x6C, 0x78, 0x00,
-    // E
-    0x7E, 0x60, 0x60, 0x7C, 0x60, 0x60, 0x7E, 0x00,
-    // F
-    0x7E, 0x60, 0x60, 0x7C, 0x60, 0x60, 0x60, 0x00,
-    // G
-    0x3C, 0x66, 0x60, 0x6E, 0x66, 0x66, 0x3C, 0x00,
-    // H
-    0x66, 0x66, 0x66, 0x7E, 0x66, 0x66, 0x66, 0x00,
-    // I
-    0x3C, 0x18, 0x18, 0x18, 0x18, 0x18, 0x3C, 0x00,
-    // J
-    0x1E, 0x0C, 0x0C, 0x0C, 0x0C, 0x6C, 0x38, 0x00,
-    // K
-    0x66, 0x6C, 0x78, 0x70, 0x78, 0x6C, 0x66, 0x00,
-    // L
-    0x60, 0x60, 0x60, 0x60, 0x60, 0x60, 0x7E, 0x00,
-    // M
-    0x63, 0x77, 0x7F, 0x6B, 0x63, 0x63, 0x63, 0x00,
-    // N
-    0x66, 0x76, 0x7E, 0x7E, 0x6E, 0x66, 0x66, 0x00,
-    // O
-    0x3C, 0x66, 0x66, 0x66, 0x66, 0x66, 0x3C, 0x00,
-    // P
-    0x7C, 0x66, 0x66, 0x7C, 0x60, 0x60, 0x60, 0x00,
-    // Q
-    0x3C, 0x66, 0x66, 0x66, 0x66, 0x3C, 0x0E, 0x00,
-    // R
-    0x7C, 0x66, 0x66, 0x7C, 0x78, 0x6C, 0x66, 0x00,
-    // S
-    0x3C, 0x66, 0x60, 0x3C, 0x06, 0x66, 0x3C, 0x00,
-    // T
-    0x7E, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x00,
-    // U
-    0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x3C, 0x00,
-    // V
-    0x66, 0x66, 0x66, 0x66, 0x66, 0x3C, 0x18, 0x00,
-    // W
-    0x63, 0x63, 0x63, 0x6B, 0x7F, 0x77, 0x63, 0x00,
-    // X
-    0x66, 0x66, 0x3C, 0x18, 0x3C, 0x66, 0x66, 0x00,
-    // Y
-    0x66, 0x66, 0x66, 0x3C, 0x18, 0x18, 0x18, 0x00,
-    // Z
-    0x7E, 0x06, 0x0C, 0x18, 0x30, 0x60, 0x7E, 0x00,
-    // 0
-    0x3C, 0x66, 0x6E, 0x76, 0x66, 0x66, 0x3C, 0x00,
-    // 1
-    0x18, 0x38, 0x18, 0x18, 0x18, 0x18, 0x7E, 0x00,
-    // 2
-    0x3C, 0x66, 0x06, 0x0C, 0x30, 0x60, 0x7E, 0x00,
-    // 3
-    0x3C, 0x66, 0x06, 0x1C, 0x06, 0x66, 0x3C, 0x00,
-    // 4
-    0x06, 0x0E, 0x1E, 0x66, 0x7F, 0x06, 0x06, 0x00,
-    // 5
-    0x7E, 0x60, 0x7C, 0x06, 0x06, 0x66, 0x3C, 0x00,
-    // 6
-    0x3C, 0x66, 0x60, 0x7C, 0x66, 0x66, 0x3C, 0x00,
-    // 7
-    0x7E, 0x66, 0x0C, 0x18, 0x18, 0x18, 0x18, 0x00,
-    // 8
-    0x3C, 0x66, 0x66, 0x3C, 0x66, 0x66, 0x3C, 0x00,
-    // 9
-    0x3C, 0x66, 0x66, 0x3E, 0x06, 0x66, 0x3C, 0x00,
-    // Space (36)
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    // . (37)
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x18, 0x18, 0x00,
-    // : (38)
-    0x00, 0x18, 0x18, 0x00, 0x18, 0x18, 0x00, 0x00,
-    // / (39)
-    0x02, 0x06, 0x0C, 0x18, 0x30, 0x60, 0x40, 0x00,
-    // - (40)
-    0x00, 0x00, 0x00, 0x7E, 0x00, 0x00, 0x00, 0x00,
-    // > (41)
-    0x30, 0x18, 0x0C, 0x06, 0x0C, 0x18, 0x30, 0x00,
-    // ^ (42)
-    0x18, 0x3C, 0x66, 0x00, 0x00, 0x00, 0x00, 0x00,
-    // v (43) - down arrow
-    0x00, 0x00, 0x00, 0x00, 0x66, 0x3C, 0x18, 0x00,
-    // _ (44)
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x7E, 0x00,
-];
+/// Debug rows preserved at bottom of screen
+const DEBUG_ROWS: usize = 5;
 
 // ============================================================================
 // ROM Browser
@@ -145,18 +42,20 @@ impl RomBrowser {
     pub fn new() -> Self {
         // Debug: show mount status on row 195
         unsafe {
-            let vga = 0xA0000 as *mut u8;
-            // Check if mounted
+            let vga = vga_mode13h::VGA_ADDR;
             let is_mounted = fat32::is_mounted();
             core::ptr::write_volatile(vga.add(195 * 320), if is_mounted { 0x0A } else { 0x04 });
-            core::ptr::write_volatile(vga.add(195 * 320 + 1), if is_mounted { 0x0A } else { 0x04 });
+            core::ptr::write_volatile(
+                vga.add(195 * 320 + 1),
+                if is_mounted { 0x0A } else { 0x04 },
+            );
         }
 
         let rom_count = fat32::get_fs().count_roms();
 
         // Debug: show rom_count on row 195
         unsafe {
-            let vga = 0xA0000 as *mut u8;
+            let vga = vga_mode13h::VGA_ADDR;
             core::ptr::write_volatile(vga.add(195 * 320 + 5), rom_count as u8);
             core::ptr::write_volatile(vga.add(195 * 320 + 6), rom_count as u8);
             // Green bar if count > 0, red if 0
@@ -188,7 +87,7 @@ impl RomBrowser {
         loop {
             if let Some(key) = keyboard::get_key() {
                 if !key.pressed {
-                    continue;  // Only handle key press, not release
+                    continue; // Only handle key press, not release
                 }
 
                 match key.keycode {
@@ -218,7 +117,9 @@ impl RomBrowser {
 
             // Small delay to prevent busy-waiting
             for _ in 0..10000 {
-                unsafe { core::arch::asm!("nop"); }
+                unsafe {
+                    core::arch::asm!("nop");
+                }
             }
         }
     }
@@ -235,38 +136,30 @@ impl RomBrowser {
     }
 
     fn draw_screen(&self) {
-        // Clear screen with dark color
-        self.fill_screen(colors::BLACK);
+        // Clear screen (preserve debug rows)
+        vga_mode13h::fill_screen_partial(colors::BLACK, DEBUG_ROWS);
 
-        // Draw border
         self.draw_border();
-
-        // Draw title
         self.draw_title();
-
-        // Draw ROM count
         self.draw_rom_count();
-
-        // Draw ROM list
         self.draw_list();
-
-        // Draw instructions
         self.draw_instructions();
     }
 
     fn draw_no_roms_screen(&self) {
-        self.fill_screen(colors::BLACK);
+        // Clear screen (preserve debug rows)
+        vga_mode13h::fill_screen_partial(colors::BLACK, DEBUG_ROWS);
+
         self.draw_border();
         self.draw_title();
 
-        // "NO ROMS FOUND" message
-        self.draw_string_centered(90, "NO ROMS FOUND", colors::WHITE);
-        self.draw_string_centered(110, "ADD .GB FILES TO", colors::LIGHT_GRAY);
-        self.draw_string_centered(125, "YOUR HARD DRIVE", colors::LIGHT_GRAY);
+        font_8x8::draw_string_centered_vga(90, "NO ROMS FOUND", colors::WHITE);
+        font_8x8::draw_string_centered_vga(110, "ADD .GB FILES TO", colors::LIGHT_GRAY);
+        font_8x8::draw_string_centered_vga(125, "YOUR HARD DRIVE", colors::LIGHT_GRAY);
 
         // Debug: show mount status AFTER screen is drawn
         unsafe {
-            let vga = 0xA0000 as *mut u8;
+            let vga = vga_mode13h::VGA_ADDR;
             // Row 195: mounted status
             let is_mounted = fat32::is_mounted();
             let mount_color = if is_mounted { 0x0A } else { 0x04 };
@@ -288,36 +181,32 @@ impl RomBrowser {
 
         // Halt here
         loop {
-            unsafe { core::arch::asm!("hlt"); }
+            unsafe {
+                core::arch::asm!("hlt");
+            }
         }
     }
 
     fn draw_border(&self) {
-        const BORDER_X: usize = 20;
-        const BORDER_Y: usize = 10;
-        const BORDER_W: usize = 280;
-        const BORDER_H: usize = 180;
-        const THICKNESS: usize = 3;
-
-        // Top
-        self.fill_rect(BORDER_X, BORDER_Y, BORDER_W, THICKNESS, colors::DARK_GRAY);
-        // Bottom
-        self.fill_rect(BORDER_X, BORDER_Y + BORDER_H - THICKNESS, BORDER_W, THICKNESS, colors::DARK_GRAY);
-        // Left
-        self.fill_rect(BORDER_X, BORDER_Y, THICKNESS, BORDER_H, colors::DARK_GRAY);
-        // Right
-        self.fill_rect(BORDER_X + BORDER_W - THICKNESS, BORDER_Y, THICKNESS, BORDER_H, colors::DARK_GRAY);
+        vga_mode13h::draw_thick_border(
+            BORDER_X,
+            BORDER_Y,
+            BORDER_W,
+            BORDER_H,
+            BORDER_THICKNESS,
+            colors::DARK_GRAY,
+        );
     }
 
     fn draw_title(&self) {
-        self.draw_string_centered(TITLE_Y, "GB-OS", colors::GREEN);
-        self.draw_string_centered(TITLE_Y + 12, "ROM SELECTOR", colors::LIGHT_GRAY);
+        font_8x8::draw_string_centered_vga(TITLE_Y, "GB-OS", colors::GREEN);
+        font_8x8::draw_string_centered_vga(TITLE_Y + 12, "ROM SELECTOR", colors::LIGHT_GRAY);
     }
 
     fn draw_rom_count(&self) {
         let mut buf = [0u8; 20];
         let count_str = self.format_count(&mut buf);
-        self.draw_string_centered(LIST_START_Y - 12, count_str, colors::DARK_GRAY);
+        font_8x8::draw_string_centered_vga(LIST_START_Y - 12, count_str, colors::DARK_GRAY);
     }
 
     fn format_count<'a>(&self, buf: &'a mut [u8; 20]) -> &'a str {
@@ -345,9 +234,13 @@ impl RomBrowser {
 
     fn draw_list(&self) {
         // Clear list area
-        self.fill_rect(LIST_X - 5, LIST_START_Y - 2,
-                       240, MAX_VISIBLE_ITEMS as usize * LIST_ITEM_HEIGHT + 4,
-                       colors::BLACK);
+        vga_mode13h::fill_rect(
+            LIST_X - 5,
+            LIST_START_Y - 2,
+            240,
+            MAX_VISIBLE_ITEMS * LIST_ITEM_HEIGHT + 4,
+            colors::BLACK,
+        );
 
         let visible_count = (self.rom_count - self.scroll_offset).min(MAX_VISIBLE_ITEMS);
 
@@ -358,7 +251,13 @@ impl RomBrowser {
 
             // Draw selection highlight
             if is_selected {
-                self.fill_rect(LIST_X - 4, y - 1, 232, LIST_ITEM_HEIGHT, colors::HIGHLIGHT_BG);
+                vga_mode13h::fill_rect(
+                    LIST_X - 4,
+                    y - 1,
+                    232,
+                    LIST_ITEM_HEIGHT,
+                    colors::HIGHLIGHT_BG,
+                );
             }
 
             // Get ROM name
@@ -370,113 +269,31 @@ impl RomBrowser {
 
                 // Draw selector arrow
                 if is_selected {
-                    self.draw_char(LIST_X, y, b'>', colors::WHITE);
+                    font_8x8::draw_char_vga(LIST_X, y, b'>', colors::WHITE);
                 }
 
                 // Draw filename
-                let text_color = if is_selected { colors::WHITE } else { colors::LIGHT_GRAY };
-                self.draw_string(LIST_X + 12, y, name, text_color);
+                let text_color = if is_selected {
+                    colors::WHITE
+                } else {
+                    colors::LIGHT_GRAY
+                };
+                font_8x8::draw_string_vga(LIST_X + 12, y, name, text_color);
             }
         }
 
         // Draw scroll indicators if needed
         if self.scroll_offset > 0 {
-            self.draw_char(SCREEN_WIDTH - 35, LIST_START_Y, b'^', colors::LIGHT_GRAY);
+            font_8x8::draw_char_vga(SCREEN_WIDTH - 35, LIST_START_Y, b'^', colors::LIGHT_GRAY);
         }
         if self.scroll_offset + MAX_VISIBLE_ITEMS < self.rom_count {
             let y = LIST_START_Y + (MAX_VISIBLE_ITEMS - 1) * LIST_ITEM_HEIGHT;
-            self.draw_char(SCREEN_WIDTH - 35, y, b'V', colors::LIGHT_GRAY);
+            font_8x8::draw_char_vga(SCREEN_WIDTH - 35, y, font_8x8::DOWN_ARROW, colors::LIGHT_GRAY);
         }
     }
 
     fn draw_instructions(&self) {
-        self.draw_string_centered(175, "UP/DOWN:SELECT  ENTER:BOOT", colors::DARK_GRAY);
-    }
-
-    // ========================================================================
-    // Drawing Primitives
-    // ========================================================================
-
-    fn fill_screen(&self, color: u8) {
-        unsafe {
-            // Only fill rows 0-194, preserve rows 195-199 for debug
-            for i in 0..(SCREEN_WIDTH * 195) {
-                core::ptr::write_volatile(VGA_ADDR.add(i), color);
-            }
-        }
-    }
-
-    fn fill_rect(&self, x: usize, y: usize, w: usize, h: usize, color: u8) {
-        unsafe {
-            for row in 0..h {
-                let py = y + row;
-                if py >= SCREEN_HEIGHT { break; }
-                for col in 0..w {
-                    let px = x + col;
-                    if px >= SCREEN_WIDTH { break; }
-                    let offset = py * SCREEN_WIDTH + px;
-                    core::ptr::write_volatile(VGA_ADDR.add(offset), color);
-                }
-            }
-        }
-    }
-
-    fn draw_char(&self, x: usize, y: usize, ch: u8, color: u8) {
-        // Map character to font index
-        let index = match ch {
-            b'A'..=b'Z' => (ch - b'A') as usize,
-            b'0'..=b'9' => (ch - b'0' + 26) as usize,
-            b' ' => 36,
-            b'.' => 37,
-            b':' => 38,
-            b'/' => 39,
-            b'-' => 40,
-            b'>' => 41,
-            b'^' => 42,
-            b'V' => 43,  // Down arrow (uppercase V)
-            b'_' => 44,
-            // Map lowercase to uppercase (except special chars handled above)
-            b'a'..=b'z' => (ch - b'a') as usize,
-            _ => 36,  // Default to space
-        };
-
-        // Get font bitmap for this character
-        let start = index * 8;
-        if start + 8 <= FONT_DATA.len() {
-            self.draw_char_bitmap(x, y, &FONT_DATA[start..start + 8], color);
-        }
-    }
-
-    fn draw_char_bitmap(&self, x: usize, y: usize, bitmap: &[u8], color: u8) {
-        unsafe {
-            for row in 0..8 {
-                let py = y + row;
-                if py >= SCREEN_HEIGHT { continue; }
-                let bits = bitmap[row];
-                for col in 0..8 {
-                    if (bits >> (7 - col)) & 1 != 0 {
-                        let px = x + col;
-                        if px >= SCREEN_WIDTH { continue; }
-                        let offset = py * SCREEN_WIDTH + px;
-                        core::ptr::write_volatile(VGA_ADDR.add(offset), color);
-                    }
-                }
-            }
-        }
-    }
-
-    fn draw_string(&self, x: usize, y: usize, s: &str, color: u8) {
-        let mut cx = x;
-        for ch in s.bytes() {
-            self.draw_char(cx, y, ch, color);
-            cx += 8;  // Fixed-width font
-        }
-    }
-
-    fn draw_string_centered(&self, y: usize, s: &str, color: u8) {
-        let width = s.len() * 8;
-        let x = (SCREEN_WIDTH - width) / 2;
-        self.draw_string(x, y, s, color);
+        font_8x8::draw_string_centered_vga(175, "UP/DOWN:SELECT  ENTER:BOOT", colors::DARK_GRAY);
     }
 }
 
