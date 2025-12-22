@@ -135,6 +135,7 @@ impl RomBrowser {
         }
     }
 
+    #[inline(never)]
     fn draw_screen(&self) {
         // Clear screen (preserve debug rows)
         vga_mode13h::fill_screen_partial(colors::BLACK, DEBUG_ROWS);
@@ -146,6 +147,7 @@ impl RomBrowser {
         self.draw_instructions();
     }
 
+    #[inline(never)]
     fn draw_no_roms_screen(&self) {
         // Clear screen (preserve debug rows)
         vga_mode13h::fill_screen_partial(colors::BLACK, DEBUG_ROWS);
@@ -187,6 +189,7 @@ impl RomBrowser {
         }
     }
 
+    #[inline(never)]
     fn draw_border(&self) {
         vga_mode13h::draw_thick_border(
             BORDER_X,
@@ -198,11 +201,13 @@ impl RomBrowser {
         );
     }
 
+    #[inline(never)]
     fn draw_title(&self) {
         font_8x8::draw_string_centered_vga(TITLE_Y, "GB-OS", colors::GREEN);
         font_8x8::draw_string_centered_vga(TITLE_Y + 12, "ROM SELECTOR", colors::LIGHT_GRAY);
     }
 
+    #[inline(never)]
     fn draw_rom_count(&self) {
         let mut buf = [0u8; 20];
         let count_str = self.format_count(&mut buf);
@@ -232,6 +237,7 @@ impl RomBrowser {
         unsafe { core::str::from_utf8_unchecked(&buf[..pos]) }
     }
 
+    #[inline(never)]
     fn draw_list(&self) {
         // Clear list area
         vga_mode13h::fill_rect(
@@ -241,6 +247,11 @@ impl RomBrowser {
             MAX_VISIBLE_ITEMS * LIST_ITEM_HEIGHT + 4,
             colors::BLACK,
         );
+
+        // Compiler fence - force synchronization
+        unsafe {
+            core::ptr::write_volatile(0xA0000 as *mut u8, 0x00);
+        }
 
         let visible_count = (self.rom_count - self.scroll_offset).min(MAX_VISIBLE_ITEMS);
 

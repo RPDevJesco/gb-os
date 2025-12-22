@@ -35,7 +35,7 @@ pub mod colors {
 ///
 /// # Arguments
 /// * `color` - VGA palette index (0-255)
-#[inline(always)]
+#[inline(never)]
 pub fn fill_screen(color: u8) {
     unsafe {
         for i in 0..(SCREEN_WIDTH * SCREEN_HEIGHT) {
@@ -49,7 +49,7 @@ pub fn fill_screen(color: u8) {
 /// # Arguments
 /// * `color` - VGA palette index (0-255)
 /// * `preserve_rows` - Number of rows at bottom to preserve (e.g., 5 for debug)
-#[inline(always)]
+#[inline(never)]
 pub fn fill_screen_partial(color: u8, preserve_rows: usize) {
     let rows_to_fill = SCREEN_HEIGHT.saturating_sub(preserve_rows);
     unsafe {
@@ -67,7 +67,7 @@ pub fn fill_screen_partial(color: u8, preserve_rows: usize) {
 /// * `w` - Width in pixels
 /// * `h` - Height in pixels
 /// * `color` - VGA palette index (0-255)
-#[inline(always)]
+#[inline(never)]
 pub fn fill_rect(x: usize, y: usize, w: usize, h: usize, color: u8) {
     unsafe {
         for row in 0..h {
@@ -93,7 +93,7 @@ pub fn fill_rect(x: usize, y: usize, w: usize, h: usize, color: u8) {
 /// * `x` - X coordinate
 /// * `y` - Y coordinate
 /// * `color` - VGA palette index (0-255)
-#[inline(always)]
+#[inline(never)]
 pub fn set_pixel(x: usize, y: usize, color: u8) {
     if x < SCREEN_WIDTH && y < SCREEN_HEIGHT {
         unsafe {
@@ -110,7 +110,7 @@ pub fn set_pixel(x: usize, y: usize, color: u8) {
 /// * `y` - Y coordinate
 /// * `length` - Length in pixels
 /// * `color` - VGA palette index (0-255)
-#[inline(always)]
+#[inline(never)]
 pub fn draw_hline(x: usize, y: usize, length: usize, color: u8) {
     fill_rect(x, y, length, 1, color);
 }
@@ -122,7 +122,7 @@ pub fn draw_hline(x: usize, y: usize, length: usize, color: u8) {
 /// * `y` - Starting Y coordinate
 /// * `length` - Length in pixels
 /// * `color` - VGA palette index (0-255)
-#[inline(always)]
+#[inline(never)]
 pub fn draw_vline(x: usize, y: usize, length: usize, color: u8) {
     fill_rect(x, y, 1, length, color);
 }
@@ -135,7 +135,7 @@ pub fn draw_vline(x: usize, y: usize, length: usize, color: u8) {
 /// * `w` - Width in pixels
 /// * `h` - Height in pixels
 /// * `color` - VGA palette index (0-255)
-#[inline(always)]
+#[inline(never)]
 pub fn draw_rect(x: usize, y: usize, w: usize, h: usize, color: u8) {
     draw_hline(x, y, w, color); // Top
     draw_hline(x, y + h - 1, w, color); // Bottom
@@ -152,7 +152,7 @@ pub fn draw_rect(x: usize, y: usize, w: usize, h: usize, color: u8) {
 /// * `h` - Height in pixels
 /// * `thickness` - Border thickness in pixels
 /// * `color` - VGA palette index (0-255)
-#[inline(always)]
+#[inline(never)]
 pub fn draw_thick_border(x: usize, y: usize, w: usize, h: usize, thickness: usize, color: u8) {
     // Top
     fill_rect(x, y, w, thickness, color);
@@ -174,7 +174,7 @@ pub fn draw_thick_border(x: usize, y: usize, w: usize, h: usize, thickness: usiz
 /// * `y` - Top edge Y coordinate
 /// * `bitmap` - Array of 8 bytes, one per row, MSB is leftmost pixel
 /// * `color` - VGA palette index for set pixels (0-255)
-#[inline(always)]
+#[inline(never)]
 pub fn draw_bitmap_8x8(x: usize, y: usize, bitmap: [u8; 8], color: u8) {
     unsafe {
         for (row, bits) in bitmap.iter().enumerate() {
