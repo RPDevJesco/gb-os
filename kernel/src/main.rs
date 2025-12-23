@@ -17,6 +17,7 @@ mod drivers;
 mod event_chains;
 
 // GUI module (needed by drivers/init.rs even if not used)
+mod graphics;
 mod gui;
 mod storage;
 mod rom_browser;

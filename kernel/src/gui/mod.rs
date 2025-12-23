@@ -2,8 +2,8 @@
 //!
 //! Provides a simple, clean graphical interface for primitive graphics events.
 //!
-
 pub mod font;
+pub mod font_8x8;
 pub mod framebuffer;
 
 pub use framebuffer::Framebuffer;
