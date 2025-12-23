@@ -107,45 +107,6 @@ impl EventMiddleware for DependencyMiddleware {
 // Driver Events
 // =============================================================================
 
-/// ATI Rage GPU Probe Event
-pub struct AtiRageProbeEvent;
-
-impl ChainableEvent for AtiRageProbeEvent {
-    fn execute(&self, context: &mut EventContext) -> EventResult<()> {
-        match crate::drivers::ati_rage::init() {
-            Ok(()) => {
-                if let Some(gpu) = crate::drivers::ati_rage::get() {
-                    let mode = crate::drivers::ati_rage::DisplayMode::mode_800x600_60();
-                    match gpu.set_mode(&mode, 32) {
-                        Ok(()) => {
-                            context.set_bool(context_keys::GPU_INITIALIZED, true);
-                            context.set_u32(context_keys::GPU_TYPE, gpu_type::ATI_RAGE);
-                            context.set_u32(context_keys::FB_ADDR, gpu.framebuffer_addr());
-                            context.set_u32(context_keys::FB_WIDTH, gpu.width());
-                            context.set_u32(context_keys::FB_HEIGHT, gpu.height());
-                            context.set_u32(context_keys::FB_BPP, gpu.bpp() / 8);
-                            context.set_u32(context_keys::FB_PITCH, gpu.pitch());
-
-                            gpu.enable_cursor();
-                            context.set_bool(context_keys::HW_CURSOR, true);
-
-                            EventResult::success(())
-                        }
-                        Err(e) => EventResult::failure(e),
-                    }
-                } else {
-                    EventResult::failure("GPU unavailable after init")
-                }
-            }
-            Err(e) => EventResult::failure(e),
-        }
-    }
-
-    fn name(&self) -> &'static str {
-        "ati_rage_probe"
-    }
-}
-
 /// VESA Fallback Event
 pub struct VesaFallbackEvent;
 
@@ -317,8 +278,6 @@ impl ChainableEvent for KeyboardInitEvent {
 // =============================================================================
 // Global Event Instances
 // =============================================================================
-
-static ATI_RAGE_PROBE: AtiRageProbeEvent = AtiRageProbeEvent;
 static VESA_FALLBACK: VesaFallbackEvent = VesaFallbackEvent;
 static FRAMEBUFFER_INIT: FramebufferInitEvent = FramebufferInitEvent;
 static SYNAPTICS_INIT: SynapticsInitEvent = SynapticsInitEvent;
@@ -401,7 +360,6 @@ pub fn init_all_drivers(
     let chain = EventChain::new()
         .middleware(&LOGGING_MW)
         .middleware(&DEPENDENCY_MW)
-        .event(&ATI_RAGE_PROBE)      // Try native GPU first
         .event(&VESA_FALLBACK)       // Fall back to VESA
         .event(&FRAMEBUFFER_INIT)    // Initialize framebuffer subsystem
         .event(&SYNAPTICS_INIT)      // Try Synaptics touchpad
