@@ -37,4 +37,3 @@ pub use ram_layout::{decode_text, StatusCondition, PokemonType};
 
 // Re-export overlay renderer
 pub use game_overlay::{OverlayRenderer, OverlayConfig, render_overlay, is_game_supported};
-pub use game_overlay::colors;

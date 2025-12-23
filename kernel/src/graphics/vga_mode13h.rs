@@ -17,14 +17,25 @@ pub const VGA_ADDR: *mut u8 = 0xA0000 as *mut u8;
 /// Standard VGA palette color indices
 pub mod colors {
     pub const BLACK: u8 = 0x00;
+    pub const BLUE: u8 = 0x01;
     pub const DARK_GREEN: u8 = 0x02;
+    pub const CYAN: u8 = 0x03;
     pub const RED: u8 = 0x04;
+    pub const MAGENTA: u8 = 0x05;
+    pub const BROWN: u8 = 0x06;
     pub const LIGHT_GRAY: u8 = 0x07;
     pub const DARK_GRAY: u8 = 0x08;
+    pub const LIGHT_BLUE: u8 = 0x09;
     pub const GREEN: u8 = 0x0A;
+    pub const LIGHT_CYAN: u8 = 0x0B;
+    pub const LIGHT_RED: u8 = 0x0C;
+    pub const LIGHT_MAGENTA: u8 = 0x0D;
+    pub const YELLOW: u8 = 0x0E;
     pub const WHITE: u8 = 0x0F;
-    pub const LIGHT_GREEN: u8 = 0x2A; // GB screen green
-    pub const HIGHLIGHT_BG: u8 = 0x02; // Dark green background for selection
+
+    // Game Boy green palette
+    pub const LIGHT_GREEN: u8 = 0x2A;
+    pub const HIGHLIGHT_BG: u8 = 0x02;
 }
 
 // ============================================================================
