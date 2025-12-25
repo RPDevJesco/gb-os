@@ -456,18 +456,6 @@ fn exception_handler(name: &str, frame: &InterruptFrame) {
             vga.add(line2 + (eip_prefix.len() + i) * 2).write_volatile(c);
             vga.add(line2 + (eip_prefix.len() + i) * 2 + 1).write_volatile(0x4F);
         }
-
-        // Also try the VGA writer if available
-        if let Some(writer) = crate::drivers::vga::WRITER.as_mut() {
-            use core::fmt::Write;
-            let _ = writeln!(writer, "\n!!! EXCEPTION: {} !!!", name);
-            let _ = writeln!(writer, "EIP: 0x{:08X}", frame.eip);
-            let _ = writeln!(writer, "Error code: 0x{:08X}", frame.error_code);
-            let _ = writeln!(writer, "EAX: 0x{:08X}  EBX: 0x{:08X}", frame.eax, frame.ebx);
-            let _ = writeln!(writer, "ECX: 0x{:08X}  EDX: 0x{:08X}", frame.ecx, frame.edx);
-            let _ = writeln!(writer, "ESI: 0x{:08X}  EDI: 0x{:08X}", frame.esi, frame.edi);
-            let _ = writeln!(writer, "EBP: 0x{:08X}  CS:  0x{:04X}", frame.ebp, frame.cs);
-        }
     }
 
     loop {
@@ -501,22 +489,6 @@ fn page_fault_handler(frame: &InterruptFrame) {
             let nibble = ((fault_addr >> (28 - i * 4)) & 0xF) as u8;
             let c = if nibble < 10 { b'0' + nibble } else { b'A' + nibble - 10 };
             vga.add((msg.len() + i) * 2).write_volatile(c);
-        }
-
-        if let Some(writer) = crate::drivers::vga::WRITER.as_mut() {
-            use core::fmt::Write;
-            let _ = writeln!(writer, "\n!!! PAGE FAULT !!!");
-            let _ = writeln!(writer, "Faulting address: 0x{:08X}", fault_addr);
-            let _ = writeln!(writer, "EIP: 0x{:08X}", frame.eip);
-            let _ = writeln!(writer, "Error code: 0x{:08X}", frame.error_code);
-
-            // Decode error code
-            let present = (frame.error_code & 0x01) != 0;
-            let write = (frame.error_code & 0x02) != 0;
-            let user = (frame.error_code & 0x04) != 0;
-            let reserved = (frame.error_code & 0x08) != 0;
-            let _ = writeln!(writer, "  Present: {}, Write: {}, User: {}, Reserved: {}",
-                             present, write, user, reserved);
         }
     }
 
@@ -564,17 +536,6 @@ fn mouse_handler() {
 
     // Read the data byte
     let byte = unsafe { super::io::inb(0x60) };
-
-    // Route to appropriate driver based on what's initialized
-    // Check Synaptics first (preferred driver)
-    if crate::drivers::synaptics::is_initialized() {
-        crate::drivers::synaptics::handle_irq_byte(byte);
-    } else {
-        // Fall back to generic PS/2 mouse driver
-        unsafe {
-            crate::drivers::mouse::MOUSE.process_byte(byte);
-        }
-    }
 
     // IRQ12 is on the slave PIC, so we need to send EOI to both
     pic::send_eoi(44);
