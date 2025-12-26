@@ -14,12 +14,13 @@
 #
 # Windows (CMD):
 #   docker build -t gb-os-builder .
-#   docker run --rm -v "%cd%/output:/output" gb-os-builder
+#   docker run --rm -v "$(pwd)/output:/output" gb-os-builder
+#   docker run --rm -v "$PWD/output:/output" gb-os-builder
 #
 # QEMU run:
 #   qemu-system-i386 -M pc -cpu pentium3 -m 128 -fda gameboy-system.img -vga std
 
-FROM --platform=linux/amd64 ubuntu:24.04
+FROM ubuntu:24.04
 
 LABEL maintainer="gb-os Contributors"
 LABEL description="Build environment for gb-os (GameBoy bare-metal emulator)"
