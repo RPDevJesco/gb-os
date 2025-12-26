@@ -3,6 +3,8 @@
 //! Provides a simple, clean graphical interface for primitive graphics events.
 //!
 pub mod font;
+
+pub mod font_4x6;
 pub mod font_8x8;
 pub mod framebuffer;
 

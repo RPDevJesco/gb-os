@@ -12,14 +12,14 @@
 //! +------+------------------+------+
 //! |      |                  |      |
 //! | Left |   Game Screen    | Right|
-//! | Info |     160x144      | Info |
+//! | Info |     320x200      | Info |
 //! |      |   (at x=80)      |      |
 //! +------+------------------+------+
 //! ```
 
-use crate::overlay::ram_layout::{Game, RamReader, Pokemon, TrainerData, PartyState, decode_text, StatusCondition};
-use crate::gui::font_8x8;
-use crate::graphics::vga_mode13h::{self, colors, SCREEN_WIDTH, SCREEN_HEIGHT};
+use crate::overlay::ram_layout::{Game, RamReader, Pokemon, decode_text, StatusCondition};
+use crate::gui::font_4x6;
+use crate::graphics::vga_mode13h::{colors, SCREEN_WIDTH, SCREEN_HEIGHT};
 
 // Overlay-specific aliases
 const HP_GREEN: u8 = colors::GREEN;
@@ -29,6 +29,10 @@ const HP_BG: u8 = colors::DARK_GRAY;
 const OVERLAY_TEXT: u8 = colors::WHITE;
 const OVERLAY_TEXT_DIM: u8 = colors::LIGHT_GRAY;
 const OVERLAY_BG: u8 = colors::BLACK;
+
+// Font metrics
+const CHAR_W: usize = font_4x6::CELL_WIDTH;   // 5
+const CHAR_H: usize = font_4x6::CELL_HEIGHT;  // 7
 
 // =============================================================================
 // Overlay Configuration
@@ -94,14 +98,14 @@ impl OverlayRenderer {
 
     /// Draw a single character at (x, y)
     fn draw_char(&self, fb: &mut [u8], x: usize, y: usize, c: u8, color: u8) {
-        if x + 8 > SCREEN_WIDTH || y + 8 > SCREEN_HEIGHT {
+        if x + 4 > SCREEN_WIDTH || y + 6 > SCREEN_HEIGHT {
             return;
         }
 
-        let bitmap = font_8x8::get_char_bitmap(c);
+        let bitmap = font_4x6::get_char_bitmap(c);
         for (row, &bits) in bitmap.iter().enumerate() {
             let py = y + row;
-            for col in 0..8 {
+            for col in 0..4 {
                 if bits & (0x80 >> col) != 0 {
                     let px = x + col;
                     let offset = py * SCREEN_WIDTH + px;
@@ -119,8 +123,8 @@ impl OverlayRenderer {
         for &c in s {
             if c == 0 { break; }
             self.draw_char(fb, cx, y, c, color);
-            cx += 8;
-            if cx + 8 > SCREEN_WIDTH { break; }
+            cx += CHAR_W;
+            if cx + 4 > SCREEN_WIDTH { break; }
         }
     }
 
@@ -150,7 +154,7 @@ impl OverlayRenderer {
         let start = if digits < width { width - digits } else { 0 };
 
         for (j, &c) in buf[i..].iter().enumerate() {
-            self.draw_char(fb, x + (start + j) * 8, y, c, color);
+            self.draw_char(fb, x + (start + j) * CHAR_W, y, c, color);
         }
     }
 
@@ -214,12 +218,12 @@ impl OverlayRenderer {
     }
 
     /// Draw party Pokemon slot
-    fn draw_party_slot(&self, fb: &mut [u8], x: usize, y: usize, slot: usize, pokemon: Option<&Pokemon>) {
+    fn draw_party_slot(&self, fb: &mut [u8], x: usize, y: usize, _slot: usize, pokemon: Option<&Pokemon>) {
         match pokemon {
             Some(mon) => {
                 // Species number and level
-                // Format: "#001 L05" or species name if we have it
-                let mut line1 = [b' '; 12];
+                // Format: "#001 L05"
+                let mut line1 = [b' '; 10];
                 line1[0] = b'#';
                 line1[1] = b'0' + (mon.species / 100) % 10;
                 line1[2] = b'0' + (mon.species / 10) % 10;
@@ -240,7 +244,7 @@ impl OverlayRenderer {
                 self.draw_string(fb, x, y, &line1, OVERLAY_TEXT);
 
                 // HP bar
-                self.draw_hp_bar(fb, x, y + 9, mon.hp_current, mon.hp_max, 60);
+                self.draw_hp_bar(fb, x, y + 8, mon.hp_current, mon.hp_max, 48);
 
                 // HP numbers
                 let mut hp_str = [b' '; 9];
@@ -256,17 +260,17 @@ impl OverlayRenderer {
                 if hp >= 10 { hp_str[pos] = b'0' + (hp / 10 % 10) as u8; pos += 1; }
                 hp_str[pos] = b'0' + (hp % 10) as u8;
 
-                self.draw_string(fb, x + 64, y + 6, &hp_str, OVERLAY_TEXT_DIM);
+                self.draw_string(fb, x + 50, y + 6, &hp_str, OVERLAY_TEXT_DIM);
 
                 // Status condition
                 let status_str = mon.status.as_str();
                 if !status_str.is_empty() {
-                    self.draw_str(fb, x + 100, y, status_str, colors::LIGHT_RED);
+                    self.draw_str(fb, x + 50, y, status_str, colors::LIGHT_RED);
                 }
             }
             None => {
                 // Empty slot
-                self.draw_str(fb, x, y, "------", OVERLAY_TEXT_DIM);
+                self.draw_str(fb, x, y, "---", OVERLAY_TEXT_DIM);
             }
         }
     }
@@ -275,15 +279,15 @@ impl OverlayRenderer {
     fn draw_badges(&self, fb: &mut [u8], x: usize, y: usize, badges: u8, label: &str) {
         self.draw_str(fb, x, y, label, OVERLAY_TEXT_DIM);
 
-        let badge_y = y + 10;
+        let badge_y = y + 8;
         for i in 0..8 {
-            let bx = x + i * 10;
+            let bx = x + i * 9;
             let has_badge = badges & (1 << i) != 0;
 
             if has_badge {
-                self.draw_rect(fb, bx, badge_y, 8, 8, colors::YELLOW);
+                self.draw_rect(fb, bx, badge_y, 7, 7, colors::YELLOW);
             } else {
-                self.draw_box(fb, bx, badge_y, 8, 8, colors::DARK_GRAY);
+                self.draw_box(fb, bx, badge_y, 7, 7, colors::DARK_GRAY);
             }
         }
     }
@@ -302,17 +306,17 @@ impl OverlayRenderer {
 
     /// Render the full overlay
     pub fn render(&self, fb: &mut [u8], reader: &RamReader) {
-        let x = self.config.sidebar_x + 4; // 4px padding
-        let mut y = 4usize;
+        let x = self.config.sidebar_x + 4; // 2px padding
+        let mut y = 2usize;
 
         // Game title
         let title = match self.game {
-            Game::Yellow => "POKEMON YELLOW",
-            Game::Crystal => "POKEMON CRYSTAL",
-            Game::Unknown => "UNKNOWN GAME",
+            Game::Yellow => "YELLOW",
+            Game::Crystal => "CRYSTAL",
+            Game::Unknown => "------",
         };
         self.draw_str(fb, x, y, title, colors::YELLOW);
-        y += 12;
+        y += 10;
 
         // Trainer info
         if self.config.show_trainer {
@@ -321,16 +325,16 @@ impl OverlayRenderer {
             // Player name
             let name = decode_text(&trainer.name);
             self.draw_string(fb, x, y, &name, OVERLAY_TEXT);
-            y += 10;
+            y += 8;
 
             // Money
             self.draw_str(fb, x, y, "$", colors::LIGHT_GREEN);
-            self.draw_number(fb, x + 8, y, trainer.money, 6, OVERLAY_TEXT);
-            y += 10;
+            self.draw_number(fb, x + CHAR_W, y, trainer.money, 6, OVERLAY_TEXT);
+            y += 8;
 
             // Play time
             if self.config.show_playtime {
-                let mut time_str = [b' '; 10];
+                let mut time_str = [b' '; 9];
                 time_str[0] = b'0' + (trainer.play_hours / 100 % 10) as u8;
                 time_str[1] = b'0' + (trainer.play_hours / 10 % 10) as u8;
                 time_str[2] = b'0' + (trainer.play_hours % 10) as u8;
@@ -341,26 +345,26 @@ impl OverlayRenderer {
                 time_str[7] = b'0' + trainer.play_seconds / 10;
                 time_str[8] = b'0' + trainer.play_seconds % 10;
                 self.draw_string(fb, x, y, &time_str, OVERLAY_TEXT_DIM);
-                y += 10;
+                y += 8;
             }
 
             // Pokedex
             self.draw_str(fb, x, y, "DEX:", OVERLAY_TEXT_DIM);
-            self.draw_number(fb, x + 32, y, trainer.pokedex_owned as u32, 3, OVERLAY_TEXT);
-            self.draw_str(fb, x + 56, y, "/", OVERLAY_TEXT_DIM);
-            self.draw_number(fb, x + 64, y, trainer.pokedex_seen as u32, 3, OVERLAY_TEXT);
-            y += 12;
+            self.draw_number(fb, x + 20, y, trainer.pokedex_owned as u32, 3, OVERLAY_TEXT);
+            self.draw_str(fb, x + 40, y, "/", OVERLAY_TEXT_DIM);
+            self.draw_number(fb, x + 45, y, trainer.pokedex_seen as u32, 3, OVERLAY_TEXT);
+            y += 10;
 
             // Badges
             if self.config.show_badges {
                 if self.game == Game::Crystal {
                     self.draw_badges(fb, x, y, trainer.badges, "JOHTO:");
-                    y += 22;
+                    y += 18;
                     self.draw_badges(fb, x, y, trainer.badges_kanto, "KANTO:");
-                    y += 22;
+                    y += 18;
                 } else {
                     self.draw_badges(fb, x, y, trainer.badges, "BADGES:");
-                    y += 22;
+                    y += 18;
                 }
             }
         }
@@ -368,24 +372,24 @@ impl OverlayRenderer {
         // Party
         if self.config.show_party {
             self.draw_str(fb, x, y, "PARTY", OVERLAY_TEXT);
-            y += 10;
+            y += 8;
 
             let party = reader.read_party();
             for i in 0..6 {
                 self.draw_party_slot(fb, x, y, i, party.pokemon[i].as_ref());
-                y += 20;
+                y += 16;
             }
         }
 
         // Battle info (if in battle)
         if reader.in_battle() {
-            if let Some((species, hp, level)) = reader.read_enemy_pokemon() {
-                y = SCREEN_HEIGHT - 24;
+            if let Some((species, _hp, level)) = reader.read_enemy_pokemon() {
+                y = SCREEN_HEIGHT - 20;
                 self.draw_str(fb, x, y, "ENEMY:", colors::LIGHT_RED);
-                self.draw_str(fb, x + 48, y, "#", OVERLAY_TEXT);
-                self.draw_number(fb, x + 56, y, species as u32, 3, OVERLAY_TEXT);
-                self.draw_str(fb, x + 80, y, "L", OVERLAY_TEXT);
-                self.draw_number(fb, x + 88, y, level as u32, 3, OVERLAY_TEXT);
+                self.draw_str(fb, x + 35, y, "#", OVERLAY_TEXT);
+                self.draw_number(fb, x + 40, y, species as u32, 3, OVERLAY_TEXT);
+                self.draw_str(fb, x + 55, y, "L", OVERLAY_TEXT);
+                self.draw_number(fb, x + 60, y, level as u32, 3, OVERLAY_TEXT);
             }
         }
     }

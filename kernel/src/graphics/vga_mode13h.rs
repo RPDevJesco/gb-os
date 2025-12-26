@@ -206,3 +206,35 @@ pub fn draw_bitmap_8x8(x: usize, y: usize, bitmap: [u8; 8], color: u8) {
         }
     }
 }
+
+/// Draw an 4x6 bitmap (for font rendering, sprites, etc.)
+///
+/// Takes bitmap by value as [u8; 6] to avoid slice pointer issues
+/// in bare-metal environments.
+///
+/// # Arguments
+/// * `x` - Left edge X coordinate
+/// * `y` - Top edge Y coordinate
+/// * `bitmap` - Array of 8 bytes, one per row, MSB is leftmost pixel
+/// * `color` - VGA palette index for set pixels (0-255)
+#[inline(never)]
+pub fn draw_bitmap_4x6(x: usize, y: usize, bitmap: [u8; 6], color: u8) {
+    unsafe {
+        for (row, bits) in bitmap.iter().enumerate() {
+            let py = y + row;
+            if py >= SCREEN_HEIGHT {
+                continue;
+            }
+            for col in 0..4 {
+                if (bits >> (7 - col)) & 1 != 0 {
+                    let px = x + col;
+                    if px >= SCREEN_WIDTH {
+                        continue;
+                    }
+                    let offset = py * SCREEN_WIDTH + px;
+                    core::ptr::write_volatile(VGA_ADDR.add(offset), color);
+                }
+            }
+        }
+    }
+}
