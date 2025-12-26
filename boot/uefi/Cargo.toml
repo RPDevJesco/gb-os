@@ -1,0 +1,15 @@
+[package]
+name = "uefi-bootloader"
+version = "0.1.0"
+edition = "2024"
+authors = ["Jesse"]
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+opt-level = "z"      # Optimize for size
+lto = true           # Link-time optimization
+codegen-units = 1    # Better optimization
+strip = true         # Strip symbols
