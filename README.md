@@ -292,3 +292,7 @@ gb-os/
 MIT License — See LICENSE file for details.
 
 https://github.com/user-attachments/assets/3a013bdd-057a-4532-b4c4-2e3edb64e180
+
+Debugging:
+
+Get-Item target\i686-unknown-none\release\gb-os.bin | Select-Object Length

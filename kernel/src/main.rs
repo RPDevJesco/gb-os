@@ -31,6 +31,9 @@ use boot_info::BootInfo;
 use arch::x86::{gdt, idt};
 use core::arch::global_asm;
 
+// Import layout constants for Game Boy screen positioning
+use gui::layout::{GB_X, GB_Y, GB_WIDTH, GB_HEIGHT, GB_BORDER, GB_BORDER_COLOR};
+
 // ============================================================================
 // Panic Handler
 // ============================================================================
@@ -218,55 +221,53 @@ fn clear_screen(color: u8) {
     }
 }
 
-/// Draw the Game Boy screen border
-/// GB is 160x144, centered in 320x200: x=80, y=28
+/// Draw the Game Boy screen border using layout constants
 fn draw_gb_border() {
-    const GB_WIDTH: isize = 160;
-    const GB_HEIGHT: isize = 144;
-    const START_X: isize = 80;
-    const START_Y: isize = 28;
-    const BORDER: isize = 4;
-    const BORDER_COLOR: u8 = 0x08;  // Dark gray
-
     unsafe {
         let vga = 0xA0000 as *mut u8;
 
+        let start_x = GB_X as isize;
+        let start_y = GB_Y as isize;
+        let gb_width = GB_WIDTH as isize;
+        let gb_height = GB_HEIGHT as isize;
+        let border = GB_BORDER as isize;
+
         // Top border
-        for x in (START_X - BORDER)..(START_X + GB_WIDTH + BORDER) {
-            for y_off in 0..BORDER {
-                let offset = (START_Y - BORDER + y_off) * 320 + x;
+        for x in (start_x - border)..(start_x + gb_width + border) {
+            for y_off in 0..border {
+                let offset = (start_y - border + y_off) * 320 + x;
                 if offset >= 0 && offset < 64000 {
-                    core::ptr::write_volatile(vga.offset(offset), BORDER_COLOR);
+                    core::ptr::write_volatile(vga.offset(offset), GB_BORDER_COLOR);
                 }
             }
         }
 
         // Bottom border
-        for x in (START_X - BORDER)..(START_X + GB_WIDTH + BORDER) {
-            for y_off in 0..BORDER {
-                let offset = (START_Y + GB_HEIGHT + y_off) * 320 + x;
+        for x in (start_x - border)..(start_x + gb_width + border) {
+            for y_off in 0..border {
+                let offset = (start_y + gb_height + y_off) * 320 + x;
                 if offset >= 0 && offset < 64000 {
-                    core::ptr::write_volatile(vga.offset(offset), BORDER_COLOR);
+                    core::ptr::write_volatile(vga.offset(offset), GB_BORDER_COLOR);
                 }
             }
         }
 
         // Left border
-        for y in (START_Y - BORDER)..(START_Y + GB_HEIGHT + BORDER) {
-            for x_off in 0..BORDER {
-                let offset = y * 320 + START_X - BORDER + x_off;
+        for y in (start_y - border)..(start_y + gb_height + border) {
+            for x_off in 0..border {
+                let offset = y * 320 + start_x - border + x_off;
                 if offset >= 0 && offset < 64000 {
-                    core::ptr::write_volatile(vga.offset(offset), BORDER_COLOR);
+                    core::ptr::write_volatile(vga.offset(offset), GB_BORDER_COLOR);
                 }
             }
         }
 
         // Right border
-        for y in (START_Y - BORDER)..(START_Y + GB_HEIGHT + BORDER) {
-            for x_off in 0..BORDER {
-                let offset = y * 320 + START_X + GB_WIDTH + x_off;
+        for y in (start_y - border)..(start_y + gb_height + border) {
+            for x_off in 0..border {
+                let offset = y * 320 + start_x + gb_width + x_off;
                 if offset >= 0 && offset < 64000 {
-                    core::ptr::write_volatile(vga.offset(offset), BORDER_COLOR);
+                    core::ptr::write_volatile(vga.offset(offset), GB_BORDER_COLOR);
                 }
             }
         }
@@ -280,18 +281,13 @@ fn draw_gb_border() {
 ///
 /// VGA mode 13h default palette has grayscale at indices 16-31.
 fn blit_gb_to_vga(gb_data: &[u8]) {
-    const START_X: isize = 80;
-    const START_Y: isize = 28;
-    const SCREEN_W: usize = 160;
-    const SCREEN_H: usize = 144;
-
     unsafe {
         let vga = 0xA0000 as *mut u8;
 
-        for y in 0..SCREEN_H {
-            for x in 0..SCREEN_W {
+        for y in 0..GB_HEIGHT {
+            for x in 0..GB_WIDTH {
                 // RGB format: 3 bytes per pixel
-                let src_idx = (y * SCREEN_W + x) * 3;
+                let src_idx = (y * GB_WIDTH + x) * 3;
 
                 if src_idx + 2 < gb_data.len() {
                     let r = gb_data[src_idx] as u16;
@@ -306,7 +302,7 @@ fn blit_gb_to_vga(gb_data: &[u8]) {
                     // gray is 0-255, we want 16-31 (16 levels)
                     let vga_color = 16 + (gray >> 4);
 
-                    let offset = (START_Y as usize + y) * 320 + START_X as usize + x;
+                    let offset = (GB_Y + y) * 320 + GB_X + x;
                     core::ptr::write_volatile(vga.add(offset), vga_color);
                 }
             }
@@ -317,84 +313,6 @@ fn blit_gb_to_vga(gb_data: &[u8]) {
 // ============================================================================
 // GameBoy Emulator Integration
 // ============================================================================
-
-fn run_gameboy_emulator() -> ! {
-    use alloc::vec::Vec;
-
-    // Initialize PIT for accurate timing (1000 Hz = 1ms per tick)
-    arch::x86::pit::set_frequency(1000);
-
-    // Check if ROM was loaded by bootloader
-    let boot_info = unsafe { BootInfo::from_ptr(0x500 as *const u8) };
-
-    let rom_data: Vec<u8> = if boot_info.rom_addr != 0 && boot_info.rom_size > 0 {
-        // ROM loaded by bootloader
-        let rom_slice = unsafe {
-            core::slice::from_raw_parts(
-                boot_info.rom_addr as *const u8,
-                boot_info.rom_size as usize
-            )
-        };
-        rom_slice.to_vec()
-    } else {
-        // No ROM loaded - show error and halt
-        show_no_rom_error();
-        loop { unsafe { core::arch::asm!("hlt"); } }
-    };
-
-    // Create emulator
-    let mut device = match gameboy::Device::new_cgb(rom_data, false) {
-        Ok(d) => d,
-        Err(_e) => {
-            show_emulator_error();
-            loop { unsafe { core::arch::asm!("hlt"); } }
-        }
-    };
-
-    // Create input handler
-    let mut input_state = gameboy::input::InputState::new();
-
-    // Frame timing: 59.7 fps = ~16.75ms per frame
-    // At 1000 Hz, that's ~17 ticks per frame
-    const TICKS_PER_FRAME: u32 = 17;
-    let mut last_frame_ticks = arch::x86::pit::ticks();
-
-    // Main emulation loop
-    const CYCLES_PER_FRAME: u32 = 70224;  // ~59.7 FPS
-
-    loop {
-        // Run one frame of emulation
-        let mut cycles: u32 = 0;
-        while cycles < CYCLES_PER_FRAME {
-            cycles += device.do_cycle();
-        }
-
-        // Blit to screen if GPU updated
-        if device.check_and_reset_gpu_updated() {
-            let gpu_data = device.get_gpu_data();
-            blit_gb_to_vga(gpu_data);
-        }
-
-        // Process keyboard input
-        while let Some(key) = drivers::keyboard::get_key() {
-            if let Some(gb_key) = input_state.map_keycode(key.keycode) {
-                if key.pressed {
-                    device.keydown(gb_key);
-                } else {
-                    device.keyup(gb_key);
-                }
-            }
-        }
-
-        // Frame timing - wait until next frame time
-        let target_ticks = last_frame_ticks.wrapping_add(TICKS_PER_FRAME);
-        while arch::x86::pit::ticks().wrapping_sub(target_ticks) > 0x8000_0000 {
-            // Use HLT for power efficiency while waiting
-            unsafe { core::arch::asm!("hlt"); }
-        }
-        last_frame_ticks = target_ticks;
-    }
-}
 
 /// Run emulator with ROM loaded from FAT32
 fn run_gameboy_emulator_with_rom(rom_ptr: *const u8, rom_size: usize) -> ! {
@@ -453,7 +371,7 @@ fn run_gameboy_emulator_with_rom(rom_ptr: *const u8, rom_size: usize) -> ! {
             // Render overlay (reads RAM via peek - no side effects)
             if overlay_enabled {
                 let reader = RamReader::new(device.mmu(), game);
-               render_overlay(vga_buffer, &reader, game);
+                render_overlay(vga_buffer, &reader, game);
             }
         }
 

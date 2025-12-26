@@ -26,14 +26,11 @@
 //! // Render to framebuffer
 //! render_overlay(&mut framebuffer, &reader, game);
 //! ```
-
 pub mod ram_layout;
 pub mod game_overlay;
 // pub mod sprites; // TODO
-
 // Re-export RAM layout types
 pub use ram_layout::{Game, Pokemon, PartyState, TrainerData, RamReader};
 pub use ram_layout::{decode_text, StatusCondition, PokemonType};
-
 // Re-export overlay renderer
 pub use game_overlay::{OverlayRenderer, OverlayConfig, render_overlay, is_game_supported};

@@ -30,3 +30,4 @@ default = []
 vga_text = []      # VGA text mode support
 vesa = []          # VESA graphics support
 debug = []         # Extra debug output
+#![feature(const_cmp)]
