@@ -427,7 +427,7 @@ load_kernel:
 ; ============================================================================
 
 ROM_HEADER_SECTOR equ 289       ; Where ROM header is stored
-ROM_LOAD_SEG      equ 0x3000    ; Temporary load buffer at 0x30000
+ROM_LOAD_SEG      equ 0x4000    ; Temporary load buffer at 0x40000
 ROM_DEST_ADDR     equ 0x300000  ; Final ROM location at 3MB
 
 load_rom:
@@ -659,7 +659,7 @@ protected_mode_entry:
     test    eax, eax
     jz      .no_rom_copy
 
-    mov     esi, 0x30000            ; Source: temp buffer
+    mov     esi, 0x40000            ; Source: temp buffer
     mov     edi, ROM_DEST_ADDR      ; Dest: 3MB
     mov     ecx, [rom_size]
     add     ecx, 3

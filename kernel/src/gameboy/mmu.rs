@@ -14,6 +14,7 @@
 extern crate alloc;
 
 use alloc::boxed::Box;
+use alloc::vec;
 use super::gbmode::{GbMode, GbSpeed};
 use super::gpu::GPU;
 use super::keypad::Keypad;
@@ -27,8 +28,8 @@ const ZRAM_SIZE: usize = 0x7F;
 
 /// Memory Management Unit
 pub struct MMU {
-    // Work RAM (8 banks for CGB)
-    wram: [u8; WRAM_SIZE],
+    // Work RAM (8 banks for CGB) - BOXED to avoid 32KB on stack
+    wram: Box<[u8; WRAM_SIZE]>,
     // Zero-page RAM
     zram: [u8; ZRAM_SIZE],
     // WRAM bank select (CGB)
@@ -45,7 +46,7 @@ pub struct MMU {
     pub timer: Timer,
     // Keypad
     pub keypad: Keypad,
-    // GPU
+    // GPU - also needs to be boxed if it has large arrays
     pub gpu: GPU,
     // Memory bank controller
     pub mbc: Box<dyn mbc::MBC + 'static>,
@@ -86,8 +87,12 @@ impl MMU {
     pub fn new(
         cart: Box<dyn mbc::MBC + 'static>,
     ) -> StrResult<MMU> {
+        // Allocate wram on heap instead of stack
+        let mut wram = Box::new([0u8; WRAM_SIZE]);
+        fill_random(&mut wram[..], 42);
+
         let mut res = MMU {
-            wram: [0; WRAM_SIZE],
+            wram,
             zram: [0; ZRAM_SIZE],
             wrambank: 1,
             hdma: [0; 4],
@@ -107,8 +112,7 @@ impl MMU {
             hdma_len: 0xFF,
             undocumented_cgb_regs: [0; 3],
         };
-        fill_random(&mut res.wram, 42);
-        
+
         // Check if ROM requires CGB
         if res.rb(0x0143) == 0xC0 {
             return Err("This game does not work in Classic mode");
@@ -119,8 +123,12 @@ impl MMU {
 
     /// Create MMU for GameBoy Color
     pub fn new_cgb(cart: Box<dyn mbc::MBC + 'static>) -> StrResult<MMU> {
+        // Allocate wram on heap instead of stack
+        let mut wram = Box::new([0u8; WRAM_SIZE]);
+        fill_random(&mut wram[..], 42);
+
         let mut res = MMU {
-            wram: [0; WRAM_SIZE],
+            wram,
             zram: [0; ZRAM_SIZE],
             wrambank: 1,
             hdma: [0; 4],
@@ -140,7 +148,6 @@ impl MMU {
             hdma_len: 0xFF,
             undocumented_cgb_regs: [0; 3],
         };
-        fill_random(&mut res.wram, 42);
         res.determine_mode();
         res.set_initial();
         Ok(res)
@@ -407,129 +414,58 @@ impl MMU {
     }
 
     /// Read byte from memory without side effects (for debugging/overlay)
-    ///
-    /// This is identical to `rb()` but takes `&self` instead of `&mut self`,
-    /// allowing read-only inspection of memory state without affecting emulation.
-    /// Safe to call at any time for overlay rendering or debugging tools.
     pub fn peek(&self, addr: u16) -> u8 {
         match addr {
-            // ROM (via MBC)
             0x0000..=0x7FFF => self.mbc.readrom(addr),
-
-            // VRAM (via GPU)
             0x8000..=0x9FFF => self.gpu.rb(addr),
-
-            // External RAM (via MBC)
             0xA000..=0xBFFF => self.mbc.readram(addr),
-
-            // Work RAM bank 0 + Echo RAM
             0xC000..=0xCFFF | 0xE000..=0xEFFF => self.wram[addr as usize & 0x0FFF],
-
-            // Work RAM bank 1-7 (CGB) + Echo RAM
             0xD000..=0xDFFF | 0xF000..=0xFDFF => {
                 self.wram[(self.wrambank * 0x1000) | (addr as usize & 0x0FFF)]
             }
-
-            // OAM (via GPU)
             0xFE00..=0xFE9F => self.gpu.rb(addr),
-
-            // Unusable memory
             0xFEA0..=0xFEFF => 0xFF,
-
-            // Joypad
             0xFF00 => self.keypad.rb(),
-
-            // Serial
             0xFF01..=0xFF02 => self.serial.rb(addr),
-
-            // Unused
             0xFF03 => 0xFF,
-
-            // Timer
             0xFF04..=0xFF07 => self.timer.rb(addr),
-
-            // Unused
             0xFF08..=0xFF0E => 0xFF,
-
-            // Interrupt flags
             0xFF0F => self.intf | 0b11100000,
-
-            // Sound registers (stubbed)
             0xFF10..=0xFF3F => 0xFF,
-
-            // GPU registers and CGB-specific handling
             0xFF40..=0xFF45 => self.gpu.rb(addr),
-            0xFF46 => 0xFF, // DMA register (write-only effectively)
+            0xFF46 => 0xFF,
             0xFF47..=0xFF4B => self.gpu.rb(addr),
-
-            // Unused in DMG
             0xFF4C => 0xFF,
-
-            // CGB speed switch
             0xFF4D if self.gbmode != GbMode::Color => 0xFF,
             0xFF4D => {
                 0b01111110
                     | (if self.gbspeed == GbSpeed::Double { 0x80 } else { 0 })
                     | (if self.speed_switch_req { 1 } else { 0 })
             }
-
-            // Unused
             0xFF4E => 0xFF,
-
-            // CGB VRAM bank
             0xFF4F if self.gbmode != GbMode::Color => 0xFF,
             0xFF4F => self.gpu.rb(addr),
-
-            // Unused
             0xFF50 => 0xFF,
-
-            // CGB HDMA
             0xFF51..=0xFF55 if self.gbmode != GbMode::Color => 0xFF,
             0xFF51..=0xFF55 => self.hdma_read(addr),
-
-            // Unused
             0xFF56..=0xFF67 => 0xFF,
-
-            // CGB palette registers
             0xFF68..=0xFF6B if self.gbmode != GbMode::Color => 0xFF,
             0xFF68..=0xFF6B => self.gpu.rb(addr),
-
-            // CGB object priority mode
             0xFF6C if self.gbmode != GbMode::Color => 0xFF,
-            0xFF6C => 0xFF, // Not fully implemented
-
-            // Unused
+            0xFF6C => 0xFF,
             0xFF6D..=0xFF6F => 0xFF,
-
-            // CGB WRAM bank
             0xFF70 if self.gbmode != GbMode::Color => 0xFF,
             0xFF70 => self.wrambank as u8,
-
-            // Unused
             0xFF71 => 0xFF,
-
-            // Undocumented CGB registers
             0xFF72..=0xFF73 if self.gbmode == GbMode::Classic => 0xFF,
             0xFF72..=0xFF73 => self.undocumented_cgb_regs[addr as usize - 0xFF72],
-
-            // Unused
             0xFF74 => 0xFF,
-
-            // Undocumented CGB register
             0xFF75 if self.gbmode == GbMode::Classic => 0xFF,
             0xFF75 => self.undocumented_cgb_regs[2] | 0b10001111,
-
-            // PCM12/PCM34 (audio readback, CGB)
             0xFF76..=0xFF77 if self.gbmode == GbMode::Classic => 0xFF,
             0xFF76..=0xFF77 => 0x00,
-
-            // Unused
             0xFF78..=0xFF7F => 0xFF,
-
-            // High RAM (HRAM)
             0xFF80..=0xFFFE => self.zram[addr as usize & 0x007F],
-
-            // Interrupt enable
             0xFFFF => self.inte,
         }
     }
@@ -540,7 +476,6 @@ impl MMU {
     }
 
     /// Read a range of bytes without side effects (for debugging/overlay)
-    /// Returns a Vec containing bytes from addr to addr+len-1
     pub fn peek_range(&self, addr: u16, len: u16) -> alloc::vec::Vec<u8> {
         let mut result = alloc::vec::Vec::with_capacity(len as usize);
         for i in 0..len {
