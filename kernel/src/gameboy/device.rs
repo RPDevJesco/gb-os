@@ -51,7 +51,7 @@ impl Device {
 
     /// Get GPU framebuffer data (160x144x3 RGB bytes)
     pub fn get_gpu_data(&self) -> &[u8] {
-        &self.cpu.mmu.gpu.data
+        self.cpu.mmu.gpu.data.as_ref()
     }
 
     /// Handle key press

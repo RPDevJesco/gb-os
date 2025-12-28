@@ -5,17 +5,20 @@
 
 extern crate alloc;
 
+use alloc::boxed::Box;
 use super::gbmode::GbMode;
 
 /// Screen width in pixels
 pub const SCREEN_W: usize = 160;
-/// Screen height in pixels  
+/// Screen height in pixels
 pub const SCREEN_H: usize = 144;
 
 /// VRAM size (8KB for DMG, 16KB for CGB)
 const VRAM_SIZE: usize = 0x4000;
 /// OAM (sprite attribute memory) size
 const OAM_SIZE: usize = 0xA0;
+/// Framebuffer size (RGB, 3 bytes per pixel)
+const DATA_SIZE: usize = SCREEN_W * SCREEN_H * 3;
 
 /// Sprite priority type
 #[derive(Clone, Copy, PartialEq)]
@@ -27,8 +30,8 @@ enum PrioType {
 
 /// GPU state
 pub struct GPU {
-    // Video RAM (2 banks for CGB)
-    vram: [u8; VRAM_SIZE],
+    // Video RAM (2 banks for CGB) - BOXED to avoid 16KB on stack
+    vram: Box<[u8; VRAM_SIZE]>,
     vram_bank: usize,
     // Object Attribute Memory
     oam: [u8; OAM_SIZE],
@@ -75,8 +78,8 @@ pub struct GPU {
     // Window internal counter
     wy_trigger: bool,
     wy_pos: i32,
-    // Output buffer (RGB, 3 bytes per pixel)
-    pub data: [u8; SCREEN_W * SCREEN_H * 3],
+    // Output buffer (RGB, 3 bytes per pixel) - BOXED to avoid 69KB on stack
+    pub data: Box<[u8; DATA_SIZE]>,
     // Per-scanline background priority
     bgprio: [PrioType; SCREEN_W],
     // Frame update flag
@@ -99,8 +102,12 @@ impl GPU {
     }
 
     fn new_internal(mode: GbMode) -> GPU {
+        // Allocate large arrays on heap to avoid stack overflow
+        let vram = Box::new([0u8; VRAM_SIZE]);
+        let data = Box::new([255u8; DATA_SIZE]);
+
         GPU {
-            vram: [0; VRAM_SIZE],
+            vram,
             vram_bank: 0,
             oam: [0; OAM_SIZE],
             lcdc: 0,
@@ -135,7 +142,7 @@ impl GPU {
             mode: 0,
             wy_trigger: false,
             wy_pos: -1,
-            data: [255; SCREEN_W * SCREEN_H * 3],
+            data,
             bgprio: [PrioType::Normal; SCREEN_W],
             updated: false,
             gbmode: mode,
