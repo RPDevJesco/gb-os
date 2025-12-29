@@ -329,7 +329,7 @@ fn run_gameboy_emulator_with_rom(rom_ptr: *const u8, rom_size: usize) -> ! {
 
     // Detect game for overlay (do once at startup)
     let game = Game::detect(&device.romname());
-    let overlay_enabled = false;
+    let overlay_enabled = true;
 
     // Create input handler
     let input_state = gameboy::input::InputState::new();
