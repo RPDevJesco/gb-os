@@ -54,6 +54,27 @@ impl Device {
         self.cpu.mmu.gpu.data.as_ref()
     }
 
+    /// Get GPU palette index buffer for VGA blitting
+    pub fn get_pal_data(&self) -> &[u8] {
+        self.cpu.mmu.gpu.get_pal_data()
+    }
+
+    /// Get GBC background palettes for VGA sync
+    pub fn get_cbgpal(&self) -> &[[[u8; 3]; 4]; 8] {
+        self.cpu.mmu.gpu.get_cbgpal()
+    }
+
+    /// Get GBC sprite palettes for VGA sync
+    pub fn get_csprit(&self) -> &[[[u8; 3]; 4]; 8] {
+        self.cpu.mmu.gpu.get_csprit()
+    }
+
+    /// Get DMG palettes for VGA sync
+    pub fn get_dmg_palettes(&self) -> (&[u8; 4], &[u8; 4], &[u8; 4]) {
+        let gpu = &self.cpu.mmu.gpu;
+        (gpu.get_palb(), gpu.get_pal0(), gpu.get_pal1())
+    }
+
     /// Handle key press
     pub fn keydown(&mut self, key: KeypadKey) {
         self.cpu.mmu.keypad.keydown(key);
