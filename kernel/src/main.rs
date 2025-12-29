@@ -31,6 +31,8 @@ pub mod overlay;
 use boot_info::BootInfo;
 use arch::x86::{gdt, idt};
 use core::arch::global_asm;
+use crate::graphics::vga_palette;
+use crate::gameboy::gbmode::GbMode;
 
 // Import defensive module for hardening
 use defensive::{OperationId, set_last_operation};
@@ -156,6 +158,9 @@ extern "C" fn kernel_main(_boot_info_ptr: u32) -> ! {
                 if let Some((rom_ptr, rom_size)) = load_rom(rom_index) {
                     // Clear screen
                     clear_screen(0x00);
+
+                    // Initialize VGA palette for GBC colors NOW
+                    vga_palette::init_palette();
 
                     // Draw Game Boy border
                     draw_gb_border();
@@ -283,39 +288,14 @@ fn draw_gb_border() {
 /// We convert to VGA palette indices using grayscale approximation.
 ///
 /// VGA mode 13h default palette has grayscale at indices 16-31.
-fn blit_gb_to_vga(gb_data: &[u8]) {
-    // Validate input buffer size
-    const EXPECTED_SIZE: usize = GB_WIDTH * GB_HEIGHT * 3;
-    if gb_data.len() < EXPECTED_SIZE {
-        return;
-    }
-
+/// Fast palette-indexed blit for VGA mode 13h
+fn blit_gb_to_vga_fast(pal_data: &[u8]) {
     unsafe {
         let vga = 0xA0000 as *mut u8;
-
         for y in 0..GB_HEIGHT {
-            for x in 0..GB_WIDTH {
-                // RGB format: 3 bytes per pixel
-                let src_idx = (y * GB_WIDTH + x) * 3;
-
-                let r = gb_data[src_idx] as u16;
-                let g = gb_data[src_idx + 1] as u16;
-                let b = gb_data[src_idx + 2] as u16;
-
-                // Convert RGB to grayscale using luminance formula
-                // Y = 0.299*R + 0.587*G + 0.114*B (approximated with integers)
-                let gray = ((r * 77 + g * 150 + b * 29) >> 8) as u8;
-
-                // Map to VGA grayscale palette (indices 16-31)
-                // gray is 0-255, we want 16-31 (16 levels)
-                let vga_color = 16 + (gray >> 4);
-
-                let offset = (GB_Y + y) * 320 + GB_X + x;
-                // Bounds check
-                if offset < 64000 {
-                    core::ptr::write_volatile(vga.add(offset), vga_color);
-                }
-            }
+            let src = pal_data.as_ptr().add(y * GB_WIDTH);
+            let dst = vga.add((GB_Y + y) * 320 + GB_X);
+            core::ptr::copy_nonoverlapping(src, dst, GB_WIDTH);
         }
     }
 }
@@ -392,8 +372,17 @@ fn run_gameboy_emulator_with_rom(rom_ptr: *const u8, rom_size: usize) -> ! {
             set_last_operation(OperationId::GpuRender);
             let gpu_data = device.get_gpu_data();
 
+            // Sync GBC palettes to VGA DAC
+            if device.mode() == GbMode::Color {
+                vga_palette::sync_gbc_bg_palettes(device.get_cbgpal());
+                vga_palette::sync_gbc_sprite_palettes(device.get_csprit());
+            } else {
+                let (palb, pal0, pal1) = device.get_dmg_palettes();
+                vga_palette::sync_dmg_palettes(palb, pal0, pal1);
+            }
+
             set_last_operation(OperationId::VgaBlit);
-            blit_gb_to_vga(gpu_data);
+            blit_gb_to_vga_fast(device.get_pal_data());
 
             // Render overlay (reads RAM via peek - no side effects)
             if overlay_enabled {

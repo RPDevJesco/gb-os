@@ -2,430 +2,456 @@
 //!
 //! Emulates the GameBoy's Picture Processing Unit which renders
 //! 160x144 pixel display at ~60fps.
+//!
+//! Based on rboy by mvdnes, adapted for bare-metal VGA output.
 
 extern crate alloc;
 
 use alloc::boxed::Box;
+use alloc::vec;
+use alloc::vec::Vec;
+use core::cmp::Ordering;
 use super::gbmode::GbMode;
 
-/// Screen width in pixels
 pub const SCREEN_W: usize = 160;
-/// Screen height in pixels
 pub const SCREEN_H: usize = 144;
 
-/// VRAM size (8KB for DMG, 16KB for CGB)
 const VRAM_SIZE: usize = 0x4000;
-/// OAM (sprite attribute memory) size
-const OAM_SIZE: usize = 0xA0;
-/// Framebuffer size (RGB, 3 bytes per pixel)
-const DATA_SIZE: usize = SCREEN_W * SCREEN_H * 3;
+const VOAM_SIZE: usize = 0xA0;
 
-/// Sprite priority type
-#[derive(Clone, Copy, PartialEq)]
+#[derive(PartialEq, Copy, Clone)]
 enum PrioType {
-    Normal,
-    Priority,
     Color0,
+    PrioFlag,
+    Normal,
 }
 
-/// GPU state
 pub struct GPU {
-    // Video RAM (2 banks for CGB) - BOXED to avoid 16KB on stack
-    vram: Box<[u8; VRAM_SIZE]>,
-    vram_bank: usize,
-    // Object Attribute Memory
-    oam: [u8; OAM_SIZE],
-    // LCD control register (0xFF40)
-    lcdc: u8,
-    // LCD status register (0xFF41)
-    stat: u8,
-    // Scroll registers
+    mode: u8,
+    modeclock: u32,
+    pub line: u8,
+    lyc: u8,
+    lcd_on: bool,
+    win_tilemap: u16,
+    win_on: bool,
+    tilebase: u16,
+    bg_tilemap: u16,
+    sprite_size: u32,
+    sprite_on: bool,
+    lcdc0: bool,
+    lyc_inte: bool,
+    m0_inte: bool,
+    m1_inte: bool,
+    m2_inte: bool,
     pub scy: u8,
     pub scx: u8,
-    // Current scanline (0xFF44)
-    pub line: u8,
-    // LY compare (0xFF45)
-    lyc: u8,
-    // Window position
-    pub wy: u8,
-    pub winx: u8,
-    // Palettes (DMG)
+    winy: u8,
+    winx: u8,
+    wy_trigger: bool,
+    wy_pos: i32,
     palbr: u8,
     pal0r: u8,
     pal1r: u8,
     palb: [u8; 4],
     pal0: [u8; 4],
     pal1: [u8; 4],
-    // CGB palettes
-    cbgpal_ind: u8,
+    // VRAM - boxed to avoid stack overflow
+    vram: Box<[u8; VRAM_SIZE]>,
+    voam: [u8; VOAM_SIZE],
     cbgpal_inc: bool,
+    cbgpal_ind: u8,
     cbgpal: [[[u8; 3]; 4]; 8],
-    csprit_ind: u8,
     csprit_inc: bool,
+    csprit_ind: u8,
     csprit: [[[u8; 3]; 4]; 8],
-    // LCDC bit extracts for fast access
-    lcd_on: bool,
-    win_tilemap: u16,
-    bg_tilemap: u16,
-    tilebase: u16,
-    sprite_size: u32,
-    sprite_on: bool,
-    win_on: bool,
-    lcdc0: bool,
-    // Mode timing
-    modeclock: u32,
-    mode: u8,
-    // Window internal counter
-    wy_trigger: bool,
-    wy_pos: i32,
-    // Output buffer (RGB, 3 bytes per pixel) - BOXED to avoid 69KB on stack
-    pub data: Box<[u8; DATA_SIZE]>,
-    // Per-scanline background priority
+    vrambank: usize,
+    // RGB framebuffer - boxed to avoid stack overflow
+    pub data: Vec<u8>,
+    // VGA palette index buffer (for mode 13h direct blitting)
+    pub pal_data: Vec<u8>,
     bgprio: [PrioType; SCREEN_W],
-    // Frame update flag
     pub updated: bool,
-    // Hardware mode
-    pub gbmode: GbMode,
-    // Interrupt request
     pub interrupt: u8,
-    // First frame after LCD on
+    pub gbmode: GbMode,
+    hblanking: bool,
     first_frame: bool,
 }
 
 impl GPU {
     pub fn new() -> GPU {
-        GPU::new_internal(GbMode::Classic)
-    }
-
-    pub fn new_cgb() -> GPU {
-        GPU::new_internal(GbMode::Color)
-    }
-
-    fn new_internal(mode: GbMode) -> GPU {
-        // Allocate large arrays on heap to avoid stack overflow
-        let vram = Box::new([0u8; VRAM_SIZE]);
-        let data = Box::new([255u8; DATA_SIZE]);
-
         GPU {
-            vram,
-            vram_bank: 0,
-            oam: [0; OAM_SIZE],
-            lcdc: 0,
-            stat: 0,
-            scy: 0,
-            scx: 0,
+            mode: 0,
+            modeclock: 0,
             line: 0,
             lyc: 0,
-            wy: 0,
-            winx: 0,
-            palbr: 0,
-            pal0r: 0,
-            pal1r: 0,
-            palb: [255, 192, 96, 0],
-            pal0: [255, 192, 96, 0],
-            pal1: [255, 192, 96, 0],
-            cbgpal_ind: 0,
-            cbgpal_inc: false,
-            cbgpal: [[[255; 3]; 4]; 8],
-            csprit_ind: 0,
-            csprit_inc: false,
-            csprit: [[[255; 3]; 4]; 8],
             lcd_on: false,
-            win_tilemap: 0x9800,
-            bg_tilemap: 0x9800,
-            tilebase: 0x8800,
+            win_tilemap: 0x9C00,
+            win_on: false,
+            tilebase: 0x8000,
+            bg_tilemap: 0x9C00,
             sprite_size: 8,
             sprite_on: false,
-            win_on: false,
             lcdc0: false,
-            modeclock: 0,
-            mode: 0,
+            lyc_inte: false,
+            m2_inte: false,
+            m1_inte: false,
+            m0_inte: false,
+            scy: 0,
+            scx: 0,
+            winy: 0,
+            winx: 0,
             wy_trigger: false,
             wy_pos: -1,
-            data,
+            palbr: 0,
+            pal0r: 0,
+            pal1r: 1,
+            palb: [0; 4],
+            pal0: [0; 4],
+            pal1: [0; 4],
+            vram: Box::new([0; VRAM_SIZE]),
+            voam: [0; VOAM_SIZE],
+            data: vec![0; SCREEN_W * SCREEN_H * 3],
+            pal_data: vec![0; SCREEN_W * SCREEN_H],
             bgprio: [PrioType::Normal; SCREEN_W],
             updated: false,
-            gbmode: mode,
             interrupt: 0,
+            gbmode: GbMode::Classic,
+            cbgpal_inc: false,
+            cbgpal_ind: 0,
+            cbgpal: [[[0u8; 3]; 4]; 8],
+            csprit_inc: false,
+            csprit_ind: 0,
+            csprit: [[[0u8; 3]; 4]; 8],
+            vrambank: 0,
+            hblanking: false,
             first_frame: false,
         }
     }
 
-    /// Read GPU register
-    pub fn rb(&self, addr: u16) -> u8 {
-        match addr {
-            0x8000..=0x9FFF => {
-                if self.lcd_on && self.mode == 3 {
-                    0xFF
-                } else {
-                    self.vram[self.vram_bank * 0x2000 + (addr as usize & 0x1FFF)]
+    pub fn new_cgb() -> GPU {
+        let mut gpu = GPU::new();
+        gpu.gbmode = GbMode::Color;
+        gpu
+    }
+
+    // =========================================================================
+    // Palette Accessors (for VGA DAC sync)
+    // =========================================================================
+
+    pub fn get_pal_data(&self) -> &[u8] {
+        &self.pal_data
+    }
+
+    pub fn get_cbgpal(&self) -> &[[[u8; 3]; 4]; 8] {
+        &self.cbgpal
+    }
+
+    pub fn get_csprit(&self) -> &[[[u8; 3]; 4]; 8] {
+        &self.csprit
+    }
+
+    pub fn get_palb(&self) -> &[u8; 4] {
+        &self.palb
+    }
+
+    pub fn get_pal0(&self) -> &[u8; 4] {
+        &self.pal0
+    }
+
+    pub fn get_pal1(&self) -> &[u8; 4] {
+        &self.pal1
+    }
+
+    // =========================================================================
+    // Cycle processing (matches original rboy)
+    // =========================================================================
+
+    pub fn do_cycle(&mut self, ticks: u32) {
+        if !self.lcd_on {
+            return;
+        }
+        self.hblanking = false;
+
+        let mut ticksleft = ticks;
+
+        while ticksleft > 0 {
+            let curticks = if ticksleft >= 80 { 80 } else { ticksleft };
+            self.modeclock += curticks;
+            ticksleft -= curticks;
+
+            // Full line takes 456 ticks
+            if self.modeclock >= 456 {
+                self.modeclock -= 456;
+                self.line = (self.line + 1) % 154;
+                self.check_interrupt_lyc();
+
+                // This is a VBlank line
+                if self.line >= 144 && self.mode != 1 {
+                    self.change_mode(1);
                 }
             }
-            0xFE00..=0xFE9F => {
-                if self.lcd_on && (self.mode == 2 || self.mode == 3) {
-                    0xFF
+
+            // This is a normal line
+            if self.line < 144 {
+                if self.modeclock <= 80 {
+                    if self.mode != 2 {
+                        self.change_mode(2);
+                    }
+                } else if self.modeclock <= (80 + 172) {
+                    // 252 cycles
+                    if self.mode != 3 {
+                        self.change_mode(3);
+                    }
                 } else {
-                    self.oam[addr as usize - 0xFE00]
+                    // the remaining 204
+                    if self.mode != 0 {
+                        self.change_mode(0);
+                    }
                 }
             }
-            0xFF40 => self.lcdc,
-            0xFF41 => self.stat | 0x80,
+        }
+    }
+
+    fn check_interrupt_lyc(&mut self) {
+        if self.lyc_inte && self.line == self.lyc {
+            self.interrupt |= 0x02;
+        }
+    }
+
+    fn change_mode(&mut self, mode: u8) {
+        self.mode = mode;
+
+        if match self.mode {
+            0 => {
+                self.renderscan();
+                self.hblanking = true;
+                self.m0_inte
+            }
+            1 => {
+                self.wy_trigger = false;
+                self.interrupt |= 0x01;
+                self.updated = true;
+                self.first_frame = false;
+                self.m1_inte
+            }
+            2 => self.m2_inte,
+            3 => {
+                if self.win_on && !self.wy_trigger && self.line == self.winy {
+                    self.wy_trigger = true;
+                    self.wy_pos = -1;
+                }
+                false
+            }
+            _ => false,
+        } {
+            self.interrupt |= 0x02;
+        }
+    }
+
+    pub fn may_hdma(&self) -> bool {
+        self.hblanking
+    }
+
+    // =========================================================================
+    // Memory access
+    // =========================================================================
+
+    pub fn rb(&self, a: u16) -> u8 {
+        match a {
+            0x8000..=0x9FFF => self.vram[(self.vrambank * 0x2000) | (a as usize & 0x1FFF)],
+            0xFE00..=0xFE9F => self.voam[a as usize - 0xFE00],
+            0xFF40 => {
+                (if self.lcd_on { 0x80 } else { 0 })
+                    | (if self.win_tilemap == 0x9C00 { 0x40 } else { 0 })
+                    | (if self.win_on { 0x20 } else { 0 })
+                    | (if self.tilebase == 0x8000 { 0x10 } else { 0 })
+                    | (if self.bg_tilemap == 0x9C00 { 0x08 } else { 0 })
+                    | (if self.sprite_size == 16 { 0x04 } else { 0 })
+                    | (if self.sprite_on { 0x02 } else { 0 })
+                    | (if self.lcdc0 { 0x01 } else { 0 })
+            }
+            0xFF41 => {
+                0x80 | (if self.lyc_inte { 0x40 } else { 0 })
+                    | (if self.m2_inte { 0x20 } else { 0 })
+                    | (if self.m1_inte { 0x10 } else { 0 })
+                    | (if self.m0_inte { 0x08 } else { 0 })
+                    | (if self.line == self.lyc { 0x04 } else { 0 })
+                    | self.mode
+            }
             0xFF42 => self.scy,
             0xFF43 => self.scx,
             0xFF44 => self.line,
             0xFF45 => self.lyc,
+            0xFF46 => 0,
             0xFF47 => self.palbr,
             0xFF48 => self.pal0r,
             0xFF49 => self.pal1r,
-            0xFF4A => self.wy,
+            0xFF4A => self.winy,
             0xFF4B => self.winx,
-            0xFF4F => self.vram_bank as u8 | 0xFE,
-            0xFF68 => self.cbgpal_ind | if self.cbgpal_inc { 0x80 } else { 0 },
+            0xFF4C => 0xFF,
+            0xFF4E => 0xFF,
+            0xFF4F..=0xFF6B if self.gbmode != GbMode::Color => 0xFF,
+            0xFF4F => self.vrambank as u8 | 0xFE,
+            0xFF68 => 0x40 | self.cbgpal_ind | (if self.cbgpal_inc { 0x80 } else { 0 }),
             0xFF69 => {
                 let palnum = (self.cbgpal_ind >> 3) as usize;
                 let colnum = ((self.cbgpal_ind >> 1) & 0x3) as usize;
-                if self.cbgpal_ind & 1 == 0 {
-                    let r = self.cbgpal[palnum][colnum][0] >> 3;
-                    let glow = self.cbgpal[palnum][colnum][1] >> 3;
-                    r | ((glow & 0x7) << 5)
+                if self.cbgpal_ind & 0x01 == 0x00 {
+                    self.cbgpal[palnum][colnum][0] | ((self.cbgpal[palnum][colnum][1] & 0x07) << 5)
                 } else {
-                    let ghigh = self.cbgpal[palnum][colnum][1] >> 6;
-                    let b = self.cbgpal[palnum][colnum][2] >> 3;
-                    ghigh | (b << 2)
+                    ((self.cbgpal[palnum][colnum][1] & 0x18) >> 3)
+                        | (self.cbgpal[palnum][colnum][2] << 2)
                 }
             }
-            0xFF6A => self.csprit_ind | if self.csprit_inc { 0x80 } else { 0 },
+            0xFF6A => 0x40 | self.csprit_ind | (if self.csprit_inc { 0x80 } else { 0 }),
             0xFF6B => {
                 let palnum = (self.csprit_ind >> 3) as usize;
                 let colnum = ((self.csprit_ind >> 1) & 0x3) as usize;
-                if self.csprit_ind & 1 == 0 {
-                    let r = self.csprit[palnum][colnum][0] >> 3;
-                    let glow = self.csprit[palnum][colnum][1] >> 3;
-                    r | ((glow & 0x7) << 5)
+                if self.csprit_ind & 0x01 == 0x00 {
+                    self.csprit[palnum][colnum][0] | ((self.csprit[palnum][colnum][1] & 0x07) << 5)
                 } else {
-                    let ghigh = self.csprit[palnum][colnum][1] >> 6;
-                    let b = self.csprit[palnum][colnum][2] >> 3;
-                    ghigh | (b << 2)
+                    ((self.csprit[palnum][colnum][1] & 0x18) >> 3)
+                        | (self.csprit[palnum][colnum][2] << 2)
                 }
             }
             _ => 0xFF,
         }
     }
 
-    /// Write GPU register
-    pub fn wb(&mut self, addr: u16, value: u8) {
-        match addr {
-            0x8000..=0x9FFF => {
-                if !self.lcd_on || self.mode != 3 {
-                    self.vram[self.vram_bank * 0x2000 + (addr as usize & 0x1FFF)] = value;
-                }
-            }
-            0xFE00..=0xFE9F => {
-                if !self.lcd_on || (self.mode != 2 && self.mode != 3) {
-                    self.oam[addr as usize - 0xFE00] = value;
-                }
-            }
-            0xFF40 => {
-                let was_on = self.lcd_on;
-                self.lcdc = value;
-                self.lcd_on = value & 0x80 != 0;
-                self.win_tilemap = if value & 0x40 != 0 { 0x9C00 } else { 0x9800 };
-                self.win_on = value & 0x20 != 0;
-                self.tilebase = if value & 0x10 != 0 { 0x8000 } else { 0x8800 };
-                self.bg_tilemap = if value & 0x08 != 0 { 0x9C00 } else { 0x9800 };
-                self.sprite_size = if value & 0x04 != 0 { 16 } else { 8 };
-                self.sprite_on = value & 0x02 != 0;
-                self.lcdc0 = value & 0x01 != 0;
+    fn rbvram0(&self, a: u16) -> u8 {
+        self.vram[a as usize & 0x1FFF]
+    }
 
-                if !was_on && self.lcd_on {
+    fn rbvram1(&self, a: u16) -> u8 {
+        self.vram[0x2000 + (a as usize & 0x1FFF)]
+    }
+
+    pub fn wb(&mut self, a: u16, v: u8) {
+        match a {
+            0x8000..=0x9FFF => self.vram[(self.vrambank * 0x2000) | (a as usize & 0x1FFF)] = v,
+            0xFE00..=0xFE9F => self.voam[a as usize - 0xFE00] = v,
+            0xFF40 => {
+                let orig_lcd_on = self.lcd_on;
+                self.lcd_on = v & 0x80 == 0x80;
+                self.win_tilemap = if v & 0x40 == 0x40 { 0x9C00 } else { 0x9800 };
+                self.win_on = v & 0x20 == 0x20;
+                self.tilebase = if v & 0x10 == 0x10 { 0x8000 } else { 0x8800 };
+                self.bg_tilemap = if v & 0x08 == 0x08 { 0x9C00 } else { 0x9800 };
+                self.sprite_size = if v & 0x04 == 0x04 { 16 } else { 8 };
+                self.sprite_on = v & 0x02 == 0x02;
+                self.lcdc0 = v & 0x01 == 0x01;
+                if orig_lcd_on && !self.lcd_on {
                     self.modeclock = 0;
-                    self.mode = 0;
                     self.line = 0;
+                    self.mode = 0;
                     self.wy_trigger = false;
-                    self.wy_pos = -1;
                     self.first_frame = true;
-                    self.update_stat_interrupt();
-                }
-                if was_on && !self.lcd_on {
                     self.clear_screen();
+                }
+                if !orig_lcd_on && self.lcd_on {
+                    self.change_mode(2);
+                    self.modeclock = 4;
                 }
             }
             0xFF41 => {
-                self.stat = (self.stat & 0x07) | (value & 0x78);
+                self.lyc_inte = v & 0x40 == 0x40;
+                self.m2_inte = v & 0x20 == 0x20;
+                self.m1_inte = v & 0x10 == 0x10;
+                self.m0_inte = v & 0x08 == 0x08;
             }
-            0xFF42 => self.scy = value,
-            0xFF43 => self.scx = value,
-            0xFF44 => {} // LY is read-only
+            0xFF42 => self.scy = v,
+            0xFF43 => self.scx = v,
+            0xFF44 => {}
             0xFF45 => {
-                self.lyc = value;
-                if self.lcd_on {
-                    self.update_stat_interrupt();
-                }
+                self.lyc = v;
+                self.check_interrupt_lyc();
             }
+            0xFF46 => panic!("0xFF46 should be handled by MMU"),
             0xFF47 => {
-                self.palbr = value;
+                self.palbr = v;
                 self.update_pal();
             }
             0xFF48 => {
-                self.pal0r = value;
+                self.pal0r = v;
                 self.update_pal();
             }
             0xFF49 => {
-                self.pal1r = value;
+                self.pal1r = v;
                 self.update_pal();
             }
-            0xFF4A => self.wy = value,
-            0xFF4B => self.winx = value,
-            0xFF4F => self.vram_bank = (value & 1) as usize,
+            0xFF4A => self.winy = v,
+            0xFF4B => self.winx = v,
+            0xFF4C => {}
+            0xFF4E => {}
+            0xFF4F..=0xFF6B if self.gbmode != GbMode::Color => {}
+            0xFF4F => self.vrambank = (v & 0x01) as usize,
             0xFF68 => {
-                self.cbgpal_ind = value & 0x3F;
-                self.cbgpal_inc = value & 0x80 != 0;
+                self.cbgpal_ind = v & 0x3F;
+                self.cbgpal_inc = v & 0x80 == 0x80;
             }
             0xFF69 => {
                 let palnum = (self.cbgpal_ind >> 3) as usize;
-                let colnum = ((self.cbgpal_ind >> 1) & 0x3) as usize;
-                if self.cbgpal_ind & 1 == 0 {
-                    self.cbgpal[palnum][colnum][0] = (value & 0x1F) << 3;
+                let colnum = ((self.cbgpal_ind >> 1) & 0x03) as usize;
+                if self.cbgpal_ind & 0x01 == 0x00 {
+                    self.cbgpal[palnum][colnum][0] = v & 0x1F;
                     self.cbgpal[palnum][colnum][1] =
-                        (self.cbgpal[palnum][colnum][1] & 0xC0) | ((value >> 5) << 3);
+                        (self.cbgpal[palnum][colnum][1] & 0x18) | (v >> 5);
                 } else {
                     self.cbgpal[palnum][colnum][1] =
-                        (self.cbgpal[palnum][colnum][1] & 0x38) | ((value & 0x3) << 6);
-                    self.cbgpal[palnum][colnum][2] = ((value >> 2) & 0x1F) << 3;
+                        (self.cbgpal[palnum][colnum][1] & 0x07) | ((v & 0x3) << 3);
+                    self.cbgpal[palnum][colnum][2] = (v >> 2) & 0x1F;
                 }
                 if self.cbgpal_inc {
                     self.cbgpal_ind = (self.cbgpal_ind + 1) & 0x3F;
                 }
             }
             0xFF6A => {
-                self.csprit_ind = value & 0x3F;
-                self.csprit_inc = value & 0x80 != 0;
+                self.csprit_ind = v & 0x3F;
+                self.csprit_inc = v & 0x80 == 0x80;
             }
             0xFF6B => {
                 let palnum = (self.csprit_ind >> 3) as usize;
-                let colnum = ((self.csprit_ind >> 1) & 0x3) as usize;
-                if self.csprit_ind & 1 == 0 {
-                    self.csprit[palnum][colnum][0] = (value & 0x1F) << 3;
+                let colnum = ((self.csprit_ind >> 1) & 0x03) as usize;
+                if self.csprit_ind & 0x01 == 0x00 {
+                    self.csprit[palnum][colnum][0] = v & 0x1F;
                     self.csprit[palnum][colnum][1] =
-                        (self.csprit[palnum][colnum][1] & 0xC0) | ((value >> 5) << 3);
+                        (self.csprit[palnum][colnum][1] & 0x18) | (v >> 5);
                 } else {
                     self.csprit[palnum][colnum][1] =
-                        (self.csprit[palnum][colnum][1] & 0x38) | ((value & 0x3) << 6);
-                    self.csprit[palnum][colnum][2] = ((value >> 2) & 0x1F) << 3;
+                        (self.csprit[palnum][colnum][1] & 0x07) | ((v & 0x3) << 3);
+                    self.csprit[palnum][colnum][2] = (v >> 2) & 0x1F;
                 }
                 if self.csprit_inc {
                     self.csprit_ind = (self.csprit_ind + 1) & 0x3F;
                 }
             }
-            _ => {}
+            _ => {} // Ignore unknown writes
         }
     }
 
-    /// Advance GPU by given cycles
-    pub fn do_cycle(&mut self, cycles: u32) {
-        if !self.lcd_on {
-            return;
-        }
-
-        self.modeclock += cycles;
-
-        match self.mode {
-            // OAM search (mode 2)
-            2 => {
-                if self.modeclock >= 80 {
-                    self.modeclock -= 80;
-                    self.mode = 3;
-                }
-            }
-            // Pixel transfer (mode 3)
-            3 => {
-                if self.modeclock >= 172 {
-                    self.modeclock -= 172;
-                    self.mode = 0;
-                    self.renderscan();
-                    self.update_stat_interrupt();
-                }
-            }
-            // H-Blank (mode 0)
-            0 => {
-                if self.modeclock >= 204 {
-                    self.modeclock -= 204;
-                    self.line += 1;
-
-                    if self.line == 144 {
-                        self.mode = 1;
-                        self.interrupt |= 0x01; // VBlank interrupt
-                        self.updated = true;
-                        self.wy_trigger = false;
-                        self.wy_pos = -1;
-                        self.first_frame = false;
-                    } else {
-                        if !self.wy_trigger && self.line == self.wy {
-                            self.wy_trigger = true;
-                        }
-                        self.mode = 2;
-                    }
-                    self.update_stat_interrupt();
-                }
-            }
-            // V-Blank (mode 1)
-            1 => {
-                if self.modeclock >= 456 {
-                    self.modeclock -= 456;
-                    self.line += 1;
-
-                    if self.line > 153 {
-                        self.mode = 2;
-                        self.line = 0;
-                        if self.wy == 0 {
-                            self.wy_trigger = true;
-                        }
-                    }
-                    self.update_stat_interrupt();
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn update_stat_interrupt(&mut self) {
-        let lyc_match = self.line == self.lyc;
-
-        // Update stat register
-        self.stat = (self.stat & 0xFC) | self.mode;
-        if lyc_match {
-            self.stat |= 0x04;
-        } else {
-            self.stat &= !0x04;
-        }
-
-        // Check for STAT interrupt
-        let trigger = (self.stat & 0x40 != 0 && lyc_match)
-            || (self.stat & 0x20 != 0 && self.mode == 2)
-            || (self.stat & 0x10 != 0 && self.mode == 1)
-            || (self.stat & 0x08 != 0 && self.mode == 0);
-
-        if trigger {
-            self.interrupt |= 0x02;
-        }
-    }
+    // =========================================================================
+    // Rendering
+    // =========================================================================
 
     fn clear_screen(&mut self) {
         for v in self.data.iter_mut() {
             *v = 255;
+        }
+        for v in self.pal_data.iter_mut() {
+            *v = 0;
         }
         self.updated = true;
     }
 
     fn update_pal(&mut self) {
         for i in 0..4 {
-            self.palb[i] = Self::get_mono_pal_val(self.palbr, i);
-            self.pal0[i] = Self::get_mono_pal_val(self.pal0r, i);
-            self.pal1[i] = Self::get_mono_pal_val(self.pal1r, i);
+            self.palb[i] = GPU::get_monochrome_pal_val(self.palbr, i);
+            self.pal0[i] = GPU::get_monochrome_pal_val(self.pal0r, i);
+            self.pal1[i] = GPU::get_monochrome_pal_val(self.pal1r, i);
         }
     }
 
-    fn get_mono_pal_val(value: u8, index: usize) -> u8 {
+    fn get_monochrome_pal_val(value: u8, index: usize) -> u8 {
         match (value >> (2 * index)) & 0x03 {
             0 => 255,
             1 => 192,
@@ -441,29 +467,32 @@ impl GPU {
 
         for x in 0..SCREEN_W {
             self.setcolor(x, 255);
+            self.setpal(x, 0);
             self.bgprio[x] = PrioType::Normal;
         }
-
         self.draw_bg();
         self.draw_sprites();
     }
 
     fn setcolor(&mut self, x: usize, color: u8) {
-        let idx = self.line as usize * SCREEN_W * 3 + x * 3;
-        self.data[idx] = color;
-        self.data[idx + 1] = color;
-        self.data[idx + 2] = color;
+        self.data[self.line as usize * SCREEN_W * 3 + x * 3 + 0] = color;
+        self.data[self.line as usize * SCREEN_W * 3 + x * 3 + 1] = color;
+        self.data[self.line as usize * SCREEN_W * 3 + x * 3 + 2] = color;
+    }
+
+    fn setpal(&mut self, x: usize, pal_idx: u8) {
+        self.pal_data[self.line as usize * SCREEN_W + x] = pal_idx;
     }
 
     fn setrgb(&mut self, x: usize, r: u8, g: u8, b: u8) {
-        let idx = self.line as usize * SCREEN_W * 3 + x * 3;
-        // GBC color correction
+        let baseidx = self.line as usize * SCREEN_W * 3 + x * 3;
         let r = r as u32;
         let g = g as u32;
         let b = b as u32;
-        self.data[idx] = ((r * 13 + g * 2 + b) >> 1) as u8;
-        self.data[idx + 1] = ((g * 3 + b) << 1) as u8;
-        self.data[idx + 2] = ((r * 3 + g * 2 + b * 11) >> 1) as u8;
+        // GBC color correction from Gambatte
+        self.data[baseidx + 0] = ((r * 13 + g * 2 + b) >> 1) as u8;
+        self.data[baseidx + 1] = ((g * 3 + b) << 1) as u8;
+        self.data[baseidx + 2] = ((r * 3 + g * 2 + b * 11) >> 1) as u8;
     }
 
     fn draw_bg(&mut self) {
@@ -477,11 +506,12 @@ impl GPU {
             -1
         };
 
-        if winy < 0 && !drawbg {
+        if winy < 0 && drawbg == false {
             return;
         }
 
         let wintiley = (winy as u16 >> 3) & 31;
+
         let bgy = self.scy.wrapping_add(self.line);
         let bgtiley = (bgy as u16 >> 3) & 31;
 
@@ -501,77 +531,73 @@ impl GPU {
                 (
                     self.bg_tilemap,
                     bgtiley,
-                    ((bgx >> 3) & 31) as u16,
-                    (bgy & 7) as u16,
-                    (bgx & 7) as u8,
+                    (bgx as u16 >> 3) & 31,
+                    bgy as u16 & 0x07,
+                    bgx as u8 & 0x07,
                 )
             } else {
                 continue;
             };
 
-            let tilemapaddr = tilemapbase + tiley * 32 + tilex;
-            let tileidx = self.vram[tilemapaddr as usize & 0x1FFF];
+            let tilenr: u8 = self.rbvram0(tilemapbase + tiley * 32 + tilex);
 
-            let (tileaddry, tilexbit, bgp, bgprio) = if self.gbmode == GbMode::Color {
-                let flags = self.vram[0x2000 + (tilemapaddr as usize & 0x1FFF)];
-                let bank = if flags & 0x08 != 0 { 0x2000 } else { 0 };
-                let flipy = if flags & 0x40 != 0 {
-                    7 - pixely
-                } else {
-                    pixely
-                };
-                let flipx = if flags & 0x20 != 0 { pixelx } else { 7 - pixelx };
-                let bgp = (flags & 0x07) as usize;
-                let prio = if flags & 0x80 != 0 {
-                    PrioType::Priority
-                } else {
-                    PrioType::Normal
-                };
-                let addr = self.get_tile_addr(tileidx, flipy) + bank;
-                (addr, flipx, bgp, prio)
-            } else {
+            let (palnr, vram1, xflip, yflip, prio) = if self.gbmode == GbMode::Color {
+                let flags = self.rbvram1(tilemapbase + tiley * 32 + tilex) as usize;
                 (
-                    self.get_tile_addr(tileidx, pixely),
-                    7 - pixelx,
-                    0,
-                    PrioType::Normal,
+                    flags & 0x07,
+                    flags & (1 << 3) != 0,
+                    flags & (1 << 5) != 0,
+                    flags & (1 << 6) != 0,
+                    flags & (1 << 7) != 0,
                 )
+            } else {
+                (0, false, false, false, false)
             };
 
-            let lo = self.vram[tileaddry as usize];
-            let hi = self.vram[tileaddry as usize + 1];
-            let colorbit = ((lo >> tilexbit) & 1) | (((hi >> tilexbit) & 1) << 1);
+            let tileaddress = self.tilebase
+                + (if self.tilebase == 0x8000 {
+                tilenr as u16
+            } else {
+                (tilenr as i8 as i16 + 128) as u16
+            }) * 16;
+
+            let a0 = match yflip {
+                false => tileaddress + (pixely * 2),
+                true => tileaddress + (14 - (pixely * 2)),
+            };
+
+            let (b1, b2) = match vram1 {
+                false => (self.rbvram0(a0), self.rbvram0(a0 + 1)),
+                true => (self.rbvram1(a0), self.rbvram1(a0 + 1)),
+            };
+
+            let xbit = match xflip {
+                true => pixelx,
+                false => 7 - pixelx,
+            } as u32;
+            let colnr = (if b1 & (1 << xbit) != 0 { 1 } else { 0 })
+                | (if b2 & (1 << xbit) != 0 { 2 } else { 0 });
+
+            self.bgprio[x] = if colnr == 0 {
+                PrioType::Color0
+            } else if prio {
+                PrioType::PrioFlag
+            } else {
+                PrioType::Normal
+            };
 
             if self.gbmode == GbMode::Color {
-                self.setrgb(
-                    x,
-                    self.cbgpal[bgp][colorbit as usize][0],
-                    self.cbgpal[bgp][colorbit as usize][1],
-                    self.cbgpal[bgp][colorbit as usize][2],
-                );
-                self.bgprio[x] = if colorbit == 0 {
-                    PrioType::Color0
-                } else {
-                    bgprio
-                };
+                let r = self.cbgpal[palnr][colnr][0];
+                let g = self.cbgpal[palnr][colnr][1];
+                let b = self.cbgpal[palnr][colnr][2];
+                self.setrgb(x, r, g, b);
+                self.setpal(x, (palnr as u8) * 4 + colnr as u8);
             } else {
-                self.setcolor(x, self.palb[colorbit as usize]);
-                self.bgprio[x] = if colorbit == 0 {
-                    PrioType::Color0
-                } else {
-                    PrioType::Normal
-                };
+                let color = self.palb[colnr];
+                self.setcolor(x, color);
+                self.setpal(x, 64 + colnr as u8);
             }
         }
-    }
-
-    fn get_tile_addr(&self, tileidx: u8, row: u16) -> usize {
-        let addr = if self.tilebase == 0x8000 {
-            self.tilebase + tileidx as u16 * 16
-        } else {
-            (self.tilebase as i32 + (tileidx as i8 as i32 + 128) * 16) as u16
-        };
-        (addr + row * 2) as usize & 0x1FFF
     }
 
     fn draw_sprites(&mut self) {
@@ -580,104 +606,111 @@ impl GPU {
         }
 
         let line = self.line as i32;
-        let sprite_height = self.sprite_size as i32;
+        let sprite_size = self.sprite_size as i32;
 
-        // Count visible sprites (max 10 per line)
-        let mut sprites: [(i32, usize); 10] = [(-1, 0); 10];
-        let mut count = 0;
+        let mut sprites_to_draw = [(0i32, 0i32, 0u8); 10];
+        let mut sidx = 0;
 
-        for i in 0..40 {
-            let idx = i * 4;
-            let ypos = self.oam[idx] as i32 - 16;
-            let xpos = self.oam[idx + 1] as i32 - 8;
-
-            if line >= ypos && line < ypos + sprite_height {
-                if count < 10 {
-                    sprites[count] = (xpos, i);
-                    count += 1;
-                } else {
-                    break;
-                }
+        for index in 0..40u8 {
+            let spriteaddr = 0xFE00 + (index as u16) * 4;
+            let spritey = self.rb(spriteaddr + 0) as u16 as i32 - 16;
+            if line < spritey || line >= spritey + sprite_size {
+                continue;
+            }
+            let spritex = self.rb(spriteaddr + 1) as u16 as i32 - 8;
+            sprites_to_draw[sidx] = (spritex, spritey, index);
+            sidx += 1;
+            if sidx >= 10 {
+                break;
             }
         }
 
-        // Sort by X position (lower X has priority), then by OAM index
-        sprites[..count].sort_by(|a, b| {
-            if a.0 != b.0 {
-                b.0.cmp(&a.0) // Higher X drawn first (lower priority)
+        if self.gbmode == GbMode::Color {
+            sprites_to_draw[..sidx].sort_unstable_by(cgb_sprite_order);
+        } else {
+            sprites_to_draw[..sidx].sort_unstable_by(dmg_sprite_order);
+        }
+
+        for &(spritex, spritey, i) in &sprites_to_draw[..sidx] {
+            if spritex < -7 || spritex >= (SCREEN_W as i32) {
+                continue;
+            }
+
+            let spriteaddr = 0xFE00 + (i as u16) * 4;
+            let tilenum = (self.rb(spriteaddr + 2)
+                & (if self.sprite_size == 16 { 0xFE } else { 0xFF }))
+                as u16;
+            let flags = self.rb(spriteaddr + 3) as usize;
+            let usepal1: bool = flags & (1 << 4) != 0;
+            let xflip: bool = flags & (1 << 5) != 0;
+            let yflip: bool = flags & (1 << 6) != 0;
+            let belowbg: bool = flags & (1 << 7) != 0;
+            let c_palnr = flags & 0x07;
+            let c_vram1: bool = flags & (1 << 3) != 0;
+
+            let tiley: u16 = if yflip {
+                (sprite_size - 1 - (line - spritey)) as u16
             } else {
-                b.1.cmp(&a.1) // Higher index drawn first
-            }
-        });
-
-        for &(_, i) in sprites[..count].iter() {
-            let idx = i * 4;
-            let ypos = self.oam[idx] as i32 - 16;
-            let xpos = self.oam[idx + 1] as i32 - 8;
-            let mut tileidx = self.oam[idx + 2];
-            let flags = self.oam[idx + 3];
-
-            if sprite_height == 16 {
-                tileidx &= 0xFE;
-            }
-
-            let flipy = flags & 0x40 != 0;
-            let flipx = flags & 0x20 != 0;
-            let bgprio = flags & 0x80 != 0;
-
-            let mut row = (line - ypos) as u16;
-            if flipy {
-                row = (sprite_height as u16) - 1 - row;
-            }
-
-            let (bank, palette) = if self.gbmode == GbMode::Color {
-                let bank = if flags & 0x08 != 0 { 0x2000 } else { 0 };
-                let pal = (flags & 0x07) as usize;
-                (bank, pal)
-            } else {
-                let pal = if flags & 0x10 != 0 { 1 } else { 0 };
-                (0, pal)
+                (line - spritey) as u16
             };
 
-            let tileaddr = 0x8000 + tileidx as usize * 16 + row as usize * 2;
-            let lo = self.vram[bank + (tileaddr & 0x1FFF)];
-            let hi = self.vram[bank + ((tileaddr + 1) & 0x1FFF)];
+            let tileaddress = 0x8000u16 + tilenum * 16 + tiley * 2;
+            let (b1, b2) = if c_vram1 && self.gbmode == GbMode::Color {
+                (self.rbvram1(tileaddress), self.rbvram1(tileaddress + 1))
+            } else {
+                (self.rbvram0(tileaddress), self.rbvram0(tileaddress + 1))
+            };
 
-            for px in 0..8 {
-                let screenx = xpos + px;
-                if screenx < 0 || screenx >= SCREEN_W as i32 {
+            'xloop: for x in 0..8i32 {
+                if spritex + x < 0 || spritex + x >= (SCREEN_W as i32) {
                     continue;
                 }
 
-                let bit = if flipx { px } else { 7 - px } as u8;
-                let colorbit = ((lo >> bit) & 1) | (((hi >> bit) & 1) << 1);
-
-                if colorbit == 0 {
+                let xbit = 1 << (if xflip { x } else { 7 - x } as u32);
+                let colnr =
+                    (if b1 & xbit != 0 { 1 } else { 0 }) | (if b2 & xbit != 0 { 2 } else { 0 });
+                if colnr == 0 {
                     continue;
                 }
 
-                let draw = if self.gbmode == GbMode::Color {
-                    !self.lcdc0
-                        || (self.bgprio[screenx as usize] == PrioType::Color0)
-                        || (!bgprio && self.bgprio[screenx as usize] != PrioType::Priority)
-                } else {
-                    !bgprio || self.bgprio[screenx as usize] == PrioType::Color0
-                };
-
-                if draw {
-                    if self.gbmode == GbMode::Color {
-                        self.setrgb(
-                            screenx as usize,
-                            self.csprit[palette][colorbit as usize][0],
-                            self.csprit[palette][colorbit as usize][1],
-                            self.csprit[palette][colorbit as usize][2],
-                        );
-                    } else {
-                        let pal = if palette == 0 { &self.pal0 } else { &self.pal1 };
-                        self.setcolor(screenx as usize, pal[colorbit as usize]);
+                if self.gbmode == GbMode::Color {
+                    if self.lcdc0
+                        && (self.bgprio[(spritex + x) as usize] == PrioType::PrioFlag
+                        || (belowbg && self.bgprio[(spritex + x) as usize] != PrioType::Color0))
+                    {
+                        continue 'xloop;
                     }
+                    let r = self.csprit[c_palnr][colnr][0];
+                    let g = self.csprit[c_palnr][colnr][1];
+                    let b = self.csprit[c_palnr][colnr][2];
+                    self.setrgb((spritex + x) as usize, r, g, b);
+                    self.setpal((spritex + x) as usize, 32 + (c_palnr as u8) * 4 + colnr as u8);
+                } else {
+                    if belowbg && self.bgprio[(spritex + x) as usize] != PrioType::Color0 {
+                        continue 'xloop;
+                    }
+                    let color = if usepal1 {
+                        self.pal1[colnr]
+                    } else {
+                        self.pal0[colnr]
+                    };
+                    self.setcolor((spritex + x) as usize, color);
+                    let pal = if usepal1 { 1u8 } else { 0u8 };
+                    self.setpal((spritex + x) as usize, 68 + pal * 4 + colnr as u8);
                 }
             }
         }
     }
+}
+
+// Sprite ordering functions
+fn dmg_sprite_order(a: &(i32, i32, u8), b: &(i32, i32, u8)) -> Ordering {
+    if a.0 != b.0 {
+        return b.0.cmp(&a.0);
+    }
+    b.2.cmp(&a.2)
+}
+
+fn cgb_sprite_order(a: &(i32, i32, u8), b: &(i32, i32, u8)) -> Ordering {
+    b.2.cmp(&a.2)
 }
