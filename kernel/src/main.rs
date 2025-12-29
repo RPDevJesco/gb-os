@@ -1,7 +1,17 @@
 //! RetroFutureGB - Bare Metal Game Boy Emulator
 //!
 //! A Game Boy emulator that runs directly on x86 hardware without an OS.
-//! Boots into VGA mode 13h (320x200x256) - perfect for 160x144 GB scaled 2x.
+//! Boots into VGA mode 13h (320x200x256) - perfect for 160x144 GB scaled 1x.
+//!
+//! # Rendering Pipeline (Double Buffered + Dirty Region Tracking)
+//!
+//! 1. Emulator renders GB frame to internal buffer
+//! 2. GB frame is blitted to back buffer (RAM)
+//! 3. Overlay renders ONLY changed elements to back buffer
+//! 4. Wait for VSync (vertical retrace)
+//! 5. Copy entire back buffer to VGA in one atomic operation
+//!
+//! Result: Zero flicker, zero tearing
 
 #![no_std]
 #![no_main]
@@ -31,7 +41,7 @@ pub mod overlay;
 use boot_info::BootInfo;
 use arch::x86::{gdt, idt};
 use core::arch::global_asm;
-use crate::graphics::vga_palette;
+use crate::graphics::{vga_palette, double_buffer};
 use crate::gameboy::gbmode::GbMode;
 
 // Import defensive module for hardening
@@ -162,9 +172,6 @@ extern "C" fn kernel_main(_boot_info_ptr: u32) -> ! {
                     // Initialize VGA palette for GBC colors NOW
                     vga_palette::init_palette();
 
-                    // Draw Game Boy border
-                    draw_gb_border();
-
                     // Run emulator with selected ROM
                     set_last_operation(OperationId::EmulatorInit);
                     run_gameboy_emulator_with_rom(rom_ptr, rom_size);
@@ -225,92 +232,92 @@ fn load_rom(index: usize) -> Option<(*const u8, usize)> {
 }
 
 // ============================================================================
-// VGA Mode 13h Display Functions
+// Screen Helpers
 // ============================================================================
 
-/// Clear the entire VGA screen
 fn clear_screen(color: u8) {
-    defensive::safe_fill_rect(0, 0, defensive::VGA_WIDTH, defensive::VGA_HEIGHT, color);
+    unsafe {
+        let vga = 0xA0000 as *mut u8;
+        for i in 0..(320 * 200) {
+            core::ptr::write_volatile(vga.add(i), color);
+        }
+    }
 }
 
-/// Draw the Game Boy screen border using layout constants
-fn draw_gb_border() {
-    let start_x = GB_X;
-    let start_y = GB_Y;
-    let gb_width = GB_WIDTH;
-    let gb_height = GB_HEIGHT;
-    let border = GB_BORDER;
+/// Draw border around Game Boy screen area (to back buffer)
+fn draw_gb_border(buffer: &mut [u8]) {
+    let border_left = GB_X.saturating_sub(GB_BORDER);
+    let border_top = GB_Y.saturating_sub(GB_BORDER);
+    let border_right = GB_X + GB_WIDTH + GB_BORDER;
+    let border_bottom = GB_Y + GB_HEIGHT + GB_BORDER;
 
     // Top border
-    if start_y >= border {
-        defensive::safe_fill_rect(
-            start_x.saturating_sub(border),
-            start_y - border,
-            gb_width + border * 2,
-            border,
-            GB_BORDER_COLOR,
-        );
+    for y in border_top..GB_Y {
+        for x in border_left..border_right {
+            let offset = y * 320 + x;
+            if offset < buffer.len() {
+                buffer[offset] = GB_BORDER_COLOR;
+            }
+        }
     }
 
     // Bottom border
-    defensive::safe_fill_rect(
-        start_x.saturating_sub(border),
-        start_y + gb_height,
-        gb_width + border * 2,
-        border,
-        GB_BORDER_COLOR,
-    );
+    for y in (GB_Y + GB_HEIGHT)..border_bottom {
+        for x in border_left..border_right {
+            let offset = y * 320 + x;
+            if offset < buffer.len() {
+                buffer[offset] = GB_BORDER_COLOR;
+            }
+        }
+    }
 
     // Left border
-    if start_x >= border {
-        defensive::safe_fill_rect(
-            start_x - border,
-            start_y,
-            border,
-            gb_height,
-            GB_BORDER_COLOR,
-        );
+    for y in GB_Y..(GB_Y + GB_HEIGHT) {
+        for x in border_left..GB_X {
+            let offset = y * 320 + x;
+            if offset < buffer.len() {
+                buffer[offset] = GB_BORDER_COLOR;
+            }
+        }
     }
 
     // Right border
-    defensive::safe_fill_rect(
-        start_x + gb_width,
-        start_y,
-        border,
-        gb_height,
-        GB_BORDER_COLOR,
-    );
-}
-
-/// Blit Game Boy framebuffer (160x144 RGB) to VGA mode 13h (320x200)
-///
-/// The GB GPU outputs RGB format (3 bytes per pixel).
-/// We convert to VGA palette indices using grayscale approximation.
-///
-/// VGA mode 13h default palette has grayscale at indices 16-31.
-/// Fast palette-indexed blit for VGA mode 13h
-fn blit_gb_to_vga_fast(pal_data: &[u8]) {
-    unsafe {
-        let vga = 0xA0000 as *mut u8;
-        for y in 0..GB_HEIGHT {
-            let src = pal_data.as_ptr().add(y * GB_WIDTH);
-            let dst = vga.add((GB_Y + y) * 320 + GB_X);
-            core::ptr::copy_nonoverlapping(src, dst, GB_WIDTH);
+    for y in GB_Y..(GB_Y + GB_HEIGHT) {
+        for x in (GB_X + GB_WIDTH)..border_right {
+            let offset = y * 320 + x;
+            if offset < buffer.len() {
+                buffer[offset] = GB_BORDER_COLOR;
+            }
         }
     }
 }
 
 // ============================================================================
-// GameBoy Emulator Integration
+// GameBoy Emulator Integration (Double Buffered + Dirty Region Tracking)
 // ============================================================================
 
 /// Run emulator with ROM loaded from FAT32
+///
+/// This version uses:
+/// - Double buffering for flicker-free display
+/// - VSync to prevent tearing
+/// - Dirty region tracking to minimize overlay updates
 fn run_gameboy_emulator_with_rom(rom_ptr: *const u8, rom_size: usize) -> ! {
     use alloc::vec::Vec;
-    use crate::overlay::{Game, RamReader, render_overlay};
+    use crate::overlay::{Game, RamReader, render_overlay_efficient, init_overlay};
+
+    // ========================================================================
+    // INITIALIZATION
+    // ========================================================================
 
     // Initialize PIT for accurate timing (1000 Hz = 1ms per tick)
     arch::x86::pit::set_frequency(1000);
+
+    // Initialize double buffer system
+    double_buffer::init();
+
+    // Initialize overlay dirty tracking
+    init_overlay();
 
     // Create ROM vec from loaded data
     let rom_data: Vec<u8> = unsafe {
@@ -334,20 +341,18 @@ fn run_gameboy_emulator_with_rom(rom_ptr: *const u8, rom_size: usize) -> ! {
     // Create input handler
     let input_state = gameboy::input::InputState::new();
 
+    // Draw initial border around GB screen area (to back buffer)
+    draw_gb_border(double_buffer::back_buffer());
+
     // Frame timing: 59.7 fps = ~16.75ms per frame
     const TICKS_PER_FRAME: u32 = 17;
     let mut last_frame_ticks = arch::x86::pit::ticks();
-
-    // VGA framebuffer for overlay rendering
-    let vga_buffer: &mut [u8] = unsafe {
-        core::slice::from_raw_parts_mut(0xA0000 as *mut u8, 320 * 200)
-    };
 
     // Main emulation loop
     const CYCLES_PER_FRAME: u32 = 70224;
 
     // ========================================================================
-    // MAIN EMULATION LOOP - with defensive instrumentation
+    // MAIN EMULATION LOOP - with double buffering and dirty region tracking
     // ========================================================================
     loop {
         set_last_operation(OperationId::FrameStart);
@@ -360,17 +365,20 @@ fn run_gameboy_emulator_with_rom(rom_ptr: *const u8, rom_size: usize) -> ! {
             panic!("Stack overflow detected in emulation loop!");
         }
 
+        // ====================================================================
         // Run one frame of emulation
+        // ====================================================================
         set_last_operation(OperationId::CpuCycle);
         let mut cycles: u32 = 0;
         while cycles < CYCLES_PER_FRAME {
             cycles += device.do_cycle();
         }
 
-        // Blit to screen if GPU updated
+        // ====================================================================
+        // Render if GPU updated
+        // ====================================================================
         if device.check_and_reset_gpu_updated() {
             set_last_operation(OperationId::GpuRender);
-            let gpu_data = device.get_gpu_data();
 
             // Sync GBC palettes to VGA DAC
             if device.mode() == GbMode::Color {
@@ -381,17 +389,32 @@ fn run_gameboy_emulator_with_rom(rom_ptr: *const u8, rom_size: usize) -> ! {
                 vga_palette::sync_dmg_palettes(palb, pal0, pal1);
             }
 
-            set_last_operation(OperationId::VgaBlit);
-            blit_gb_to_vga_fast(device.get_pal_data());
+            // ================================================================
+            // ALL DRAWING GOES TO BACK BUFFER
+            // ================================================================
 
-            // Render overlay (reads RAM via peek - no side effects)
+            // Blit GB screen to back buffer
+            set_last_operation(OperationId::VgaBlit);
+            double_buffer::blit_gb_to_backbuffer(device.get_pal_data());
+
+            // Render overlay to back buffer (uses dirty tracking internally)
+            // Only redraws regions that actually changed
             if overlay_enabled {
                 let reader = RamReader::new(device.mmu(), game);
-                render_overlay(vga_buffer, &reader, game);
+                render_overlay_efficient(double_buffer::back_buffer(), &reader, game);
             }
+
+            // ================================================================
+            // FLIP WITH VSYNC
+            // Waits for vertical retrace, then copies entire back buffer
+            // to VGA in one atomic operation. Zero flicker guaranteed.
+            // ================================================================
+            double_buffer::flip_vsync();
         }
 
+        // ====================================================================
         // Process keyboard input
+        // ====================================================================
         set_last_operation(OperationId::KeyboardPoll);
         while let Some(key) = drivers::keyboard::get_key() {
             if let Some(gb_key) = input_state.map_keycode(key.keycode) {
@@ -403,7 +426,9 @@ fn run_gameboy_emulator_with_rom(rom_ptr: *const u8, rom_size: usize) -> ! {
             }
         }
 
+        // ====================================================================
         // Frame timing - wait until next frame time
+        // ====================================================================
         set_last_operation(OperationId::FrameEnd);
         let target_ticks = last_frame_ticks.wrapping_add(TICKS_PER_FRAME);
         while arch::x86::pit::ticks().wrapping_sub(target_ticks) > 0x8000_0000 {
@@ -412,6 +437,10 @@ fn run_gameboy_emulator_with_rom(rom_ptr: *const u8, rom_size: usize) -> ! {
         last_frame_ticks = target_ticks;
     }
 }
+
+// ============================================================================
+// Error Display
+// ============================================================================
 
 /// Show "NO ROM" error on screen
 fn show_no_rom_error() {
