@@ -293,6 +293,5 @@ MIT License — See LICENSE file for details.
 
 https://github.com/user-attachments/assets/3a013bdd-057a-4532-b4c4-2e3edb64e180
 
-Debugging:
+<img width="1900" height="1517" alt="image" src="https://github.com/user-attachments/assets/72650c59-ec70-40de-8877-8544439db732" />
 
-Get-Item target\i686-unknown-none\release\gb-os.bin | Select-Object Length
