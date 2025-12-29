@@ -1,17 +1,29 @@
 ; ============================================================================
-; stage2.asm - Stage 2 Bootloader for gb-os
+; stage2.asm - Stage 2 Bootloader for gb-os (No-Emulation Support)
 ; ============================================================================
 ;
-; Clean, minimal bootloader for Game Boy emulation:
+; This bootloader supports booting from:
+;   1. Floppy disk (CHS addressing)
+;   2. CD-ROM via El Torito no-emulation (LBA addressing)
+;   3. Hard disk / USB (LBA addressing)
+;
+; The boot media type is passed from stage1 at BOOT_INFO_ADDR+1
+;
+; Tasks:
 ;   1. Query E820 memory map
 ;   2. Enable A20 line
-;   3. Set VGA mode 13h (320x200x256) - perfect for 160x144 GB scaled 2x
+;   3. Set VGA mode 13h (320x200x256)
 ;   4. Load kernel to 0x100000 (1MB)
 ;   5. Load ROM to 0x300000 (3MB) if present
 ;   6. Switch to 32-bit protected mode
 ;   7. Jump to kernel
 ;
+; Installation feature:
+;   - If booted from CD, can install to HDD/USB
+;   - Kernel will handle installation UI
+;
 ; Assemble: nasm -f bin -o stage2.bin stage2.asm
+;           nasm -f bin -DGAMEBOY_MODE -o stage2-gameboy.bin stage2.asm
 ; ============================================================================
 
 [BITS 16]
@@ -24,15 +36,67 @@
 dw 0x5247                       ; 'GR' magic (GameBoy Retro)
 
 ; ============================================================================
+; Constants
+; ============================================================================
+
+BOOT_INFO_ADDR      equ 0x0500
+E820_BASE           equ 0x1000      ; E820 map stored here
+E820_MAX_ENTRIES    equ 64
+
+KERNEL_LOAD_SEG     equ 0x2000      ; Kernel loaded to 0x20000 initially
+KERNEL_DEST_ADDR    equ 0x100000    ; Final kernel location (1MB)
+KERNEL_SECTORS_FDD  equ 512         ; 256KB for kernel (floppy sectors)
+KERNEL_SECTORS_CD   equ 128         ; 256KB for kernel (CD sectors)
+KERNEL_START_FDD    equ 33          ; Kernel starts at sector 33 on floppy
+KERNEL_START_CD     equ 9           ; Kernel starts at CD sector 9
+
+ROM_LOAD_SEG        equ 0x4000      ; ROM loaded to 0x40000 initially
+ROM_DEST_ADDR       equ 0x300000    ; Final ROM location (3MB)
+ROM_HEADER_SECTOR   equ 289         ; ROM header at sector 289 (floppy)
+ROM_HEADER_CD       equ 145         ; ROM header CD sector
+
+; Boot media types (from stage1)
+BOOT_MEDIA_FLOPPY   equ 0x00
+BOOT_MEDIA_CDROM    equ 0x01
+BOOT_MEDIA_HDD      equ 0x02
+
+; Floppy geometry
+SECTORS_PER_TRACK   equ 18
+HEADS               equ 2
+
+; ============================================================================
 ; Entry Point
 ; ============================================================================
 
 stage2_entry:
-    ; Save boot drive
-    mov     [boot_drive], dl
+    ; Get boot info from stage1
+    mov     al, [BOOT_INFO_ADDR]
+    mov     [boot_drive], al
+    mov     al, [BOOT_INFO_ADDR + 1]
+    mov     [boot_media], al
 
     ; Display banner
     mov     si, msg_banner
+    call    print_string
+
+    ; Show boot media type
+    mov     si, msg_media
+    call    print_string
+    mov     al, [boot_media]
+    cmp     al, BOOT_MEDIA_CDROM
+    je      .show_cd
+    cmp     al, BOOT_MEDIA_HDD
+    je      .show_hdd
+    mov     si, msg_floppy
+    jmp     .show_media_done
+.show_cd:
+    mov     si, msg_cdrom
+    jmp     .show_media_done
+.show_hdd:
+    mov     si, msg_hdd
+.show_media_done:
+    call    print_string
+    mov     si, msg_newline
     call    print_string
 
     ; ------------------------------------------------------------------------
@@ -101,28 +165,58 @@ stage2_entry:
     mov     si, msg_kernel
     call    print_string
 
-    call    load_kernel
-    jc      .kernel_fail
+    ; Select loading method based on boot media
+    mov     al, [boot_media]
+    cmp     al, BOOT_MEDIA_CDROM
+    je      .load_kernel_cd
+    cmp     al, BOOT_MEDIA_HDD
+    je      .load_kernel_lba
+    jmp     .load_kernel_floppy
 
+.load_kernel_floppy:
+    call    load_kernel_floppy
+    jmp     .kernel_loaded
+
+.load_kernel_cd:
+    call    load_kernel_cd
+    jmp     .kernel_loaded
+
+.load_kernel_lba:
+    call    load_kernel_lba
+    jmp     .kernel_loaded
+
+.kernel_loaded:
     mov     si, msg_ok
     call    print_string
-    jmp     .step5
-
-.kernel_fail:
-    mov     si, msg_fail
-    call    print_string
-    jmp     halt
 
     ; ------------------------------------------------------------------------
     ; Step 5: Load ROM (if present)
     ; ------------------------------------------------------------------------
-.step5:
+%ifdef GAMEBOY_MODE
     mov     si, msg_rom
     call    print_string
 
-    call    load_rom
-    jc      .no_rom
+    mov     al, [boot_media]
+    cmp     al, BOOT_MEDIA_CDROM
+    je      .load_rom_cd
+    cmp     al, BOOT_MEDIA_HDD
+    je      .load_rom_lba
+    jmp     .load_rom_floppy
 
+.load_rom_floppy:
+    call    load_rom_floppy
+    jmp     .rom_check
+
+.load_rom_cd:
+    call    load_rom_cd
+    jmp     .rom_check
+
+.load_rom_lba:
+    call    load_rom_lba
+    jmp     .rom_check
+
+.rom_check:
+    jc      .no_rom
     mov     si, msg_ok
     call    print_string
     jmp     .step6
@@ -130,7 +224,7 @@ stage2_entry:
 .no_rom:
     mov     si, msg_none
     call    print_string
-    ; ROM is optional, continue anyway
+%endif
 
     ; ------------------------------------------------------------------------
     ; Step 6: Enter Protected Mode
@@ -145,117 +239,103 @@ stage2_entry:
     ; Load GDT
     lgdt    [gdt_descriptor]
 
-    ; Set PE bit in CR0
+    ; Enable protected mode (set PE bit in CR0)
     mov     eax, cr0
-    or      eax, 1
+    or      al, 1
     mov     cr0, eax
 
-    ; Far jump to 32-bit code (flushes pipeline, loads CS)
+    ; Far jump to 32-bit code
     jmp     0x08:protected_mode_entry
 
 ; ============================================================================
-; Halt
+; Query E820 Memory Map
 ; ============================================================================
-
-halt:
-    cli
-.loop:
-    hlt
-    jmp     .loop
-
-; ============================================================================
-; E820 Memory Map Query
-; ============================================================================
-
-E820_BASE   equ 0x1000          ; Store map at 0x1000
-E820_MAX    equ 64
 
 query_e820:
     push    es
-    push    di
-    push    ebx
-    push    ecx
-    push    edx
+    push    bp
+    mov     bp, sp
 
+    ; Set up destination
     xor     ax, ax
     mov     es, ax
-    mov     di, E820_BASE + 4   ; Leave space for entry count
-    xor     ebx, ebx            ; Continuation = 0
-    xor     bp, bp              ; Entry counter
-    mov     edx, 0x534D4150     ; 'SMAP'
+    mov     di, E820_BASE + 4       ; Skip count field
+
+    xor     ebx, ebx                ; Continuation value
+    xor     si, si                  ; Entry counter
 
 .loop:
     mov     eax, 0xE820
-    mov     ecx, 24             ; 24-byte entries
+    mov     ecx, 24                 ; Entry size
+    mov     edx, 0x534D4150         ; 'SMAP'
     int     0x15
 
-    jc      .done               ; Carry = end/error
-    cmp     eax, 0x534D4150     ; Verify SMAP returned
+    jc      .done                   ; Carry set = end or error
+
+    cmp     eax, 0x534D4150         ; Check signature
     jne     .error
 
+    ; Valid entry
+    inc     si
     add     di, 24
-    inc     bp
-    cmp     bp, E820_MAX
-    jge     .done
 
-    test    ebx, ebx            ; EBX=0 means last entry
-    jnz     .loop
+    ; Check for end
+    test    ebx, ebx
+    jz      .done
+
+    ; Check max entries
+    cmp     si, E820_MAX_ENTRIES
+    jl      .loop
 
 .done:
-    mov     [E820_BASE], bp     ; Store count
-    pop     edx
-    pop     ecx
-    pop     ebx
-    pop     di
-    pop     es
+    ; Store entry count
+    mov     [E820_BASE], si
     clc
-    ret
+    jmp     .exit
 
 .error:
-    pop     edx
-    pop     ecx
-    pop     ebx
-    pop     di
-    pop     es
     stc
+
+.exit:
+    mov     sp, bp
+    pop     bp
+    pop     es
     ret
 
 ; ============================================================================
-; A20 Enable
+; Enable A20 Line
 ; ============================================================================
 
 enable_a20:
-    ; Try BIOS first
+    ; Try BIOS method first
     mov     ax, 0x2401
     int     0x15
     jnc     .done
 
-    ; Keyboard controller method
+    ; Try keyboard controller method
     call    .wait_kbd
-    mov     al, 0xAD            ; Disable keyboard
+    mov     al, 0xAD                ; Disable keyboard
     out     0x64, al
-
     call    .wait_kbd
-    mov     al, 0xD0            ; Read output port
-    out     0x64, al
 
-    call    .wait_kbd_data
+    mov     al, 0xD0                ; Read output port
+    out     0x64, al
+    call    .wait_data
     in      al, 0x60
     push    ax
 
     call    .wait_kbd
-    mov     al, 0xD1            ; Write output port
+    mov     al, 0xD1                ; Write output port
     out     0x64, al
-
     call    .wait_kbd
+
     pop     ax
-    or      al, 2               ; Set A20 bit
+    or      al, 2                   ; Set A20 bit
     out     0x60, al
-
     call    .wait_kbd
-    mov     al, 0xAE            ; Re-enable keyboard
-    out     0x64, al
 
+    mov     al, 0xAE                ; Enable keyboard
+    out     0x64, al
     call    .wait_kbd
 
 .done:
@@ -267,148 +347,116 @@ enable_a20:
     jnz     .wait_kbd
     ret
 
-.wait_kbd_data:
+.wait_data:
     in      al, 0x64
     test    al, 1
-    jz      .wait_kbd_data
+    jz      .wait_data
     ret
 
+; ============================================================================
+; Verify A20 Line
+; ============================================================================
+
 verify_a20:
-    push    es
     push    ds
-    push    di
-    push    si
+    push    es
 
-    ; Test using 0x600/0x610 to avoid boot_info at 0x500
     xor     ax, ax
-    mov     es, ax
-    mov     di, 0x0600
-
-    mov     ax, 0xFFFF
     mov     ds, ax
-    mov     si, 0x0610
+    not     ax
+    mov     es, ax
 
-    mov     byte [es:di], 0x00
-    mov     byte [ds:si], 0xFF
+    mov     si, 0x0500
+    mov     di, 0x0510
 
-    cmp     byte [es:di], 0xFF
-    je      .disabled
+    mov     al, [ds:si]
+    push    ax
+    mov     al, [es:di]
+    push    ax
 
-    pop     si
-    pop     di
-    pop     ds
+    mov     byte [ds:si], 0x00
+    mov     byte [es:di], 0xFF
+
+    cmp     byte [ds:si], 0xFF
+
+    pop     ax
+    mov     [es:di], al
+    pop     ax
+    mov     [ds:si], al
+
     pop     es
+    pop     ds
+
+    je      .a20_off
     clc
     ret
 
-.disabled:
-    pop     si
-    pop     di
-    pop     ds
-    pop     es
+.a20_off:
     stc
     ret
 
 ; ============================================================================
-; Load Kernel
+; Load Kernel - Floppy (CHS)
 ; ============================================================================
 
-KERNEL_SECTOR   equ 33          ; After boot(1) + stage2(32)
-KERNEL_SECTORS  equ 200         ; 100KB kernel (94KB actual + headroom)
-KERNEL_LOAD_SEG equ 0x2000      ; Load to 0x20000
-KERNEL_LOAD_OFF equ 0x0000
-
-SECTORS_PER_TRACK equ 18
-HEADS           equ 2
-
-load_kernel:
+load_kernel_floppy:
     push    es
     push    bp
 
-    ; Reset disk
-    xor     ax, ax
-    mov     dl, [boot_drive]
-    int     0x13
+    ; Set up destination
+    mov     ax, KERNEL_LOAD_SEG
+    mov     es, ax
+    xor     bx, bx
 
-    mov     word [sectors_left], KERNEL_SECTORS
-    mov     word [current_lba], KERNEL_SECTOR
-    mov     word [load_segment], KERNEL_LOAD_SEG
-    mov     word [load_offset], KERNEL_LOAD_OFF
+    mov     word [current_lba], KERNEL_START_FDD
+    mov     word [sectors_left], KERNEL_SECTORS_FDD
 
-.loop:
+.load_loop:
     cmp     word [sectors_left], 0
     je      .done
 
-    ; LBA to CHS conversion
+    ; LBA to CHS
     mov     ax, [current_lba]
     xor     dx, dx
     mov     cx, SECTORS_PER_TRACK
-    div     cx                      ; AX = head + track*2, DX = sector-1
+    div     cx
     push    dx
     xor     dx, dx
     mov     cx, HEADS
-    div     cx                      ; AX = track, DX = head
-    mov     ch, al                  ; Cylinder
-    mov     dh, dl                  ; Head
+    div     cx
+    mov     ch, al
+    mov     dh, dl
     pop     ax
     inc     al
-    mov     cl, al                  ; Sector (1-based)
+    mov     cl, al
 
-    ; Destination
-    mov     ax, [load_segment]
-    mov     es, ax
-    mov     bx, [load_offset]
-
-    ; Read with retry
+    ; Read
     mov     bp, 3
 .retry:
-    push    bx
-    push    cx
-    push    dx
-    push    es
-
     mov     ah, 0x02
     mov     al, 1
     mov     dl, [boot_drive]
     int     0x13
-
-    pop     es
-    pop     dx
-    pop     cx
-    pop     bx
-
     jnc     .read_ok
 
-    ; Reset and retry
-    push    dx
     xor     ax, ax
     mov     dl, [boot_drive]
     int     0x13
-    pop     dx
     dec     bp
     jnz     .retry
     jmp     .error
 
 .read_ok:
-    ; Progress dot (write to VGA memory since we're in mode 13h)
-    push    es
-    push    di
-    mov     ax, 0xA000
-    mov     es, ax
-    mov     di, [sectors_left]      ; Use sector count as X position
-    mov     byte [es:di], 0x0F      ; White pixel
-    pop     di
-    pop     es
-
-    ; Advance load address
-    add     word [load_offset], 512
+    add     bx, 512
     jnc     .no_wrap
-    add     word [load_segment], 0x1000
-    mov     word [load_offset], 0
+    mov     ax, es
+    add     ax, 0x1000
+    mov     es, ax
+    xor     bx, bx
 .no_wrap:
     inc     word [current_lba]
     dec     word [sectors_left]
-    jmp     .loop
+    jmp     .load_loop
 
 .done:
     pop     bp
@@ -423,23 +471,132 @@ load_kernel:
     ret
 
 ; ============================================================================
-; Load ROM (if present)
+; Load Kernel - CD-ROM (LBA with 2048-byte sectors)
 ; ============================================================================
 
-ROM_HEADER_SECTOR equ 289       ; Where ROM header is stored
-ROM_LOAD_SEG      equ 0x4000    ; Temporary load buffer at 0x40000
-ROM_DEST_ADDR     equ 0x300000  ; Final ROM location at 3MB
-
-load_rom:
+load_kernel_cd:
     push    es
     push    bp
 
-    ; Load ROM header sector to temporary buffer
+    mov     dword [dap_lba_low], KERNEL_START_CD
+    mov     dword [dap_lba_high], 0
+    mov     word [sectors_left], KERNEL_SECTORS_CD
+    mov     word [load_segment], KERNEL_LOAD_SEG
+    mov     word [load_offset], 0
+
+.load_loop:
+    cmp     word [sectors_left], 0
+    je      .done
+
+    ; Set up DAP
+    mov     word [dap_size], 0x10
+    mov     word [dap_reserved], 0
+    mov     word [dap_count], 1
+    mov     ax, [load_offset]
+    mov     [dap_offset], ax
+    mov     ax, [load_segment]
+    mov     [dap_segment], ax
+
+    ; Extended read
+    mov     si, dap_size
+    mov     ah, 0x42
+    mov     dl, [boot_drive]
+    int     0x13
+    jc      .error
+
+    ; Advance (2048-byte sectors)
+    add     word [load_offset], 2048
+    jnc     .no_wrap
+    add     word [load_segment], 0x1000
+    mov     word [load_offset], 0
+.no_wrap:
+    inc     dword [dap_lba_low]
+    dec     word [sectors_left]
+    jmp     .load_loop
+
+.done:
+    pop     bp
+    pop     es
+    clc
+    ret
+
+.error:
+    pop     bp
+    pop     es
+    stc
+    ret
+
+; ============================================================================
+; Load Kernel - HDD/USB (LBA with 512-byte sectors)
+; ============================================================================
+
+load_kernel_lba:
+    push    es
+    push    bp
+
+    mov     dword [dap_lba_low], KERNEL_START_FDD
+    mov     dword [dap_lba_high], 0
+    mov     word [sectors_left], KERNEL_SECTORS_FDD
+    mov     word [load_segment], KERNEL_LOAD_SEG
+    mov     word [load_offset], 0
+
+.load_loop:
+    cmp     word [sectors_left], 0
+    je      .done
+
+    ; Set up DAP
+    mov     word [dap_size], 0x10
+    mov     word [dap_reserved], 0
+    mov     word [dap_count], 1
+    mov     ax, [load_offset]
+    mov     [dap_offset], ax
+    mov     ax, [load_segment]
+    mov     [dap_segment], ax
+
+    ; Extended read
+    mov     si, dap_size
+    mov     ah, 0x42
+    mov     dl, [boot_drive]
+    int     0x13
+    jc      .error
+
+    ; Advance (512-byte sectors)
+    add     word [load_offset], 512
+    jnc     .no_wrap
+    add     word [load_segment], 0x1000
+    mov     word [load_offset], 0
+.no_wrap:
+    inc     dword [dap_lba_low]
+    dec     word [sectors_left]
+    jmp     .load_loop
+
+.done:
+    pop     bp
+    pop     es
+    clc
+    ret
+
+.error:
+    pop     bp
+    pop     es
+    stc
+    ret
+
+; ============================================================================
+; Load ROM - Floppy (CHS) [GameBoy Mode Only]
+; ============================================================================
+
+%ifdef GAMEBOY_MODE
+load_rom_floppy:
+    push    es
+    push    bp
+
+    ; First, read the ROM header at sector 289
     mov     ax, ROM_LOAD_SEG
     mov     es, ax
     xor     bx, bx
 
-    ; LBA to CHS for sector 289
+    ; LBA to CHS for header sector
     mov     ax, ROM_HEADER_SECTOR
     xor     dx, dx
     mov     cx, SECTORS_PER_TRACK
@@ -454,24 +611,22 @@ load_rom:
     inc     al
     mov     cl, al
 
-    ; Read header sector
+    ; Read header
     mov     ah, 0x02
     mov     al, 1
     mov     dl, [boot_drive]
     int     0x13
     jc      .no_rom
 
-    ; Check for 'GBOY' magic at start of header
-    mov     ax, ROM_LOAD_SEG
-    mov     es, ax
-    cmp     dword [es:0], 0x594F4247    ; 'GBOY'
+    ; Check for 'GBOY' magic
+    cmp     dword [es:0], 0x594F4247
     jne     .no_rom
 
-    ; Get ROM size from header (offset 4, little-endian)
+    ; Get ROM size
     mov     eax, [es:4]
     mov     [rom_size], eax
 
-    ; Copy title (offset 8, 32 bytes)
+    ; Copy title
     mov     si, 8
     mov     di, rom_title
     mov     cx, 32
@@ -482,22 +637,21 @@ load_rom:
     inc     di
     loop    .copy_title
 
-    ; Calculate sectors needed for ROM
+    ; Calculate sectors needed
     mov     eax, [rom_size]
     add     eax, 511
-    shr     eax, 9              ; Divide by 512
+    shr     eax, 9
     mov     [rom_sectors], ax
 
     ; Load ROM data starting at sector 290
     mov     word [current_lba], ROM_HEADER_SECTOR + 1
     mov     word [load_segment], ROM_LOAD_SEG
     mov     word [load_offset], 0
-    mov     ax, [rom_sectors]
-    mov     [sectors_left], ax
 
 .load_loop:
-    cmp     word [sectors_left], 0
-    je      .load_done
+    mov     ax, [rom_sectors]
+    test    ax, ax
+    jz      .done
 
     ; LBA to CHS
     mov     ax, [current_lba]
@@ -519,74 +673,247 @@ load_rom:
     mov     es, ax
     mov     bx, [load_offset]
 
-    ; Read sector
+    ; Read
     mov     bp, 3
-.rom_retry:
-    push    bx
-    push    cx
-    push    dx
-    push    es
-
+.retry:
     mov     ah, 0x02
     mov     al, 1
     mov     dl, [boot_drive]
     int     0x13
+    jnc     .read_ok
 
-    pop     es
-    pop     dx
-    pop     cx
-    pop     bx
-
-    jnc     .rom_read_ok
-
-    push    dx
     xor     ax, ax
     mov     dl, [boot_drive]
     int     0x13
-    pop     dx
     dec     bp
-    jnz     .rom_retry
+    jnz     .retry
     jmp     .no_rom
 
-.rom_read_ok:
-    ; Advance
+.read_ok:
     add     word [load_offset], 512
-    jnc     .rom_no_wrap
+    jnc     .no_wrap
     add     word [load_segment], 0x1000
     mov     word [load_offset], 0
-.rom_no_wrap:
+.no_wrap:
     inc     word [current_lba]
-    dec     word [sectors_left]
+    dec     word [rom_sectors]
     jmp     .load_loop
 
-.load_done:
-    ; Mark ROM as loaded
-    mov     dword [rom_addr], ROM_LOAD_SEG * 16  ; Physical address 0x30000
-
+.done:
+    mov     dword [rom_addr], ROM_LOAD_SEG * 16
     pop     bp
     pop     es
     clc
     ret
 
 .no_rom:
-    ; No ROM found
     mov     dword [rom_addr], 0
     mov     dword [rom_size], 0
-
     pop     bp
     pop     es
-    stc                         ; Set carry to indicate no ROM
+    stc
     ret
 
-; Variables
-sectors_left:   dw 0
-current_lba:    dw 0
-load_segment:   dw 0
-load_offset:    dw 0
-rom_sectors:    dw 0
+; ============================================================================
+; Load ROM - CD-ROM (LBA with 2048-byte sectors) [GameBoy Mode Only]
+; ============================================================================
+
+load_rom_cd:
+    push    es
+    push    bp
+
+    ; Read ROM header at CD sector
+    mov     dword [dap_lba_low], ROM_HEADER_CD
+    mov     dword [dap_lba_high], 0
+    mov     word [dap_size], 0x10
+    mov     word [dap_reserved], 0
+    mov     word [dap_count], 1
+    mov     word [dap_offset], 0
+    mov     word [dap_segment], ROM_LOAD_SEG
+
+    mov     si, dap_size
+    mov     ah, 0x42
+    mov     dl, [boot_drive]
+    int     0x13
+    jc      .no_rom
+
+    ; Check for 'GBOY' magic
+    mov     ax, ROM_LOAD_SEG
+    mov     es, ax
+    cmp     dword [es:0], 0x594F4247
+    jne     .no_rom
+
+    ; Get ROM size
+    mov     eax, [es:4]
+    mov     [rom_size], eax
+
+    ; Copy title
+    mov     si, 8
+    mov     di, rom_title
+    mov     cx, 32
+.copy_title:
+    mov     al, [es:si]
+    mov     [di], al
+    inc     si
+    inc     di
+    loop    .copy_title
+
+    ; Calculate CD sectors needed (2048-byte sectors)
+    mov     eax, [rom_size]
+    add     eax, 2047
+    shr     eax, 11              ; Divide by 2048
+    mov     [rom_sectors], ax
+
+    ; Load ROM data starting at next CD sector
+    mov     dword [dap_lba_low], ROM_HEADER_CD + 1
+    mov     word [load_segment], ROM_LOAD_SEG
+    mov     word [load_offset], 0
+
+.load_loop:
+    mov     ax, [rom_sectors]
+    test    ax, ax
+    jz      .done
+
+    ; Set up DAP
+    mov     word [dap_size], 0x10
+    mov     word [dap_reserved], 0
+    mov     word [dap_count], 1
+    mov     ax, [load_offset]
+    mov     [dap_offset], ax
+    mov     ax, [load_segment]
+    mov     [dap_segment], ax
+
+    mov     si, dap_size
+    mov     ah, 0x42
+    mov     dl, [boot_drive]
+    int     0x13
+    jc      .no_rom
+
+    add     word [load_offset], 2048
+    jnc     .no_wrap
+    add     word [load_segment], 0x1000
+    mov     word [load_offset], 0
+.no_wrap:
+    inc     dword [dap_lba_low]
+    dec     word [rom_sectors]
+    jmp     .load_loop
+
+.done:
+    mov     dword [rom_addr], ROM_LOAD_SEG * 16
+    pop     bp
+    pop     es
+    clc
+    ret
+
+.no_rom:
+    mov     dword [rom_addr], 0
+    mov     dword [rom_size], 0
+    pop     bp
+    pop     es
+    stc
+    ret
 
 ; ============================================================================
-; Print String (16-bit, works before mode switch)
+; Load ROM - HDD/USB (LBA with 512-byte sectors) [GameBoy Mode Only]
+; ============================================================================
+
+load_rom_lba:
+    push    es
+    push    bp
+
+    ; Read ROM header
+    mov     dword [dap_lba_low], ROM_HEADER_SECTOR
+    mov     dword [dap_lba_high], 0
+    mov     word [dap_size], 0x10
+    mov     word [dap_reserved], 0
+    mov     word [dap_count], 1
+    mov     word [dap_offset], 0
+    mov     word [dap_segment], ROM_LOAD_SEG
+
+    mov     si, dap_size
+    mov     ah, 0x42
+    mov     dl, [boot_drive]
+    int     0x13
+    jc      .no_rom
+
+    ; Check for 'GBOY' magic
+    mov     ax, ROM_LOAD_SEG
+    mov     es, ax
+    cmp     dword [es:0], 0x594F4247
+    jne     .no_rom
+
+    ; Get ROM size
+    mov     eax, [es:4]
+    mov     [rom_size], eax
+
+    ; Copy title
+    mov     si, 8
+    mov     di, rom_title
+    mov     cx, 32
+.copy_title:
+    mov     al, [es:si]
+    mov     [di], al
+    inc     si
+    inc     di
+    loop    .copy_title
+
+    ; Calculate sectors needed
+    mov     eax, [rom_size]
+    add     eax, 511
+    shr     eax, 9
+    mov     [rom_sectors], ax
+
+    ; Load ROM data
+    mov     dword [dap_lba_low], ROM_HEADER_SECTOR + 1
+    mov     word [load_segment], ROM_LOAD_SEG
+    mov     word [load_offset], 0
+
+.load_loop:
+    mov     ax, [rom_sectors]
+    test    ax, ax
+    jz      .done
+
+    mov     word [dap_size], 0x10
+    mov     word [dap_reserved], 0
+    mov     word [dap_count], 1
+    mov     ax, [load_offset]
+    mov     [dap_offset], ax
+    mov     ax, [load_segment]
+    mov     [dap_segment], ax
+
+    mov     si, dap_size
+    mov     ah, 0x42
+    mov     dl, [boot_drive]
+    int     0x13
+    jc      .no_rom
+
+    add     word [load_offset], 512
+    jnc     .no_wrap
+    add     word [load_segment], 0x1000
+    mov     word [load_offset], 0
+.no_wrap:
+    inc     dword [dap_lba_low]
+    dec     word [rom_sectors]
+    jmp     .load_loop
+
+.done:
+    mov     dword [rom_addr], ROM_LOAD_SEG * 16
+    pop     bp
+    pop     es
+    clc
+    ret
+
+.no_rom:
+    mov     dword [rom_addr], 0
+    mov     dword [rom_size], 0
+    pop     bp
+    pop     es
+    stc
+    ret
+%endif
+
+; ============================================================================
+; Print String (16-bit)
 ; ============================================================================
 
 print_string:
@@ -601,6 +928,12 @@ print_string:
 .done:
     popa
     ret
+
+halt:
+    cli
+.loop:
+    hlt
+    jmp     .loop
 
 ; ============================================================================
 ; GDT
@@ -632,6 +965,61 @@ gdt_descriptor:
     dd gdt_start
 
 ; ============================================================================
+; DAP (Disk Address Packet) for INT 13h extensions
+; ============================================================================
+
+align 4
+dap_size:       dw 0x10
+dap_reserved:   dw 0
+dap_count:      dw 1
+dap_offset:     dw 0
+dap_segment:    dw 0
+dap_lba_low:    dd 0
+dap_lba_high:   dd 0
+
+; ============================================================================
+; Data Section (16-bit accessible)
+; ============================================================================
+
+boot_drive:     db 0
+boot_media:     db 0
+vga_mode:       db 0
+fb_address:     dd 0
+fb_width:       dw 0
+fb_height:      dw 0
+fb_bpp:         db 0
+fb_pitch:       dw 0
+
+; Loading variables
+sectors_left:   dw 0
+current_lba:    dw 0
+load_segment:   dw 0
+load_offset:    dw 0
+rom_sectors:    dw 0
+
+; ROM info
+rom_addr:       dd 0
+rom_size:       dd 0
+rom_title:      times 32 db 0
+
+; Messages
+msg_banner:     db 13, 10, '=== gb-os ===', 13, 10, 0
+msg_media:      db ' Media: ', 0
+msg_floppy:     db 'Floppy', 0
+msg_cdrom:      db 'CD-ROM', 0
+msg_hdd:        db 'HDD/USB', 0
+msg_newline:    db 13, 10, 0
+msg_e820:       db ' E820..', 0
+msg_a20:        db ' A20..', 0
+msg_vga:        db ' VGA..', 0
+msg_kernel:     db ' Kernel..', 0
+msg_rom:        db ' ROM..', 0
+msg_pmode:      db ' PM', 0
+msg_ok:         db 'ok', 13, 10, 0
+msg_fail:       db 'FAIL', 13, 10, 0
+msg_none:       db 'none', 13, 10, 0
+
+; ============================================================================
 ; 32-bit Protected Mode Entry
 ; ============================================================================
 
@@ -649,12 +1037,13 @@ protected_mode_entry:
 
     ; Copy kernel from 0x20000 to 1MB (0x100000)
     mov     esi, 0x20000
-    mov     edi, 0x100000
-    mov     ecx, (KERNEL_SECTORS * 512) / 4
+    mov     edi, KERNEL_DEST_ADDR
+    mov     ecx, (KERNEL_SECTORS_FDD * 512) / 4
     cld
     rep movsd
 
-    ; Copy ROM from 0x30000 to 3MB (0x300000) if loaded
+%ifdef GAMEBOY_MODE
+    ; Copy ROM from 0x40000 to 3MB (0x300000) if loaded
     mov     eax, [rom_addr]
     test    eax, eax
     jz      .no_rom_copy
@@ -668,6 +1057,7 @@ protected_mode_entry:
 
     ; Update rom_addr to final location
     mov     dword [rom_addr], ROM_DEST_ADDR
+%endif
 
 .no_rom_copy:
     ; Build boot info structure at 0x500
@@ -711,6 +1101,16 @@ protected_mode_entry:
     mov     ecx, 8                  ; 32 bytes = 8 dwords
     rep movsd
 
+    ; Boot media type at offset 72
+    xor     eax, eax
+    mov     al, [boot_media]
+    mov     [0x500 + 72], eax
+
+    ; Boot drive at offset 76
+    xor     eax, eax
+    mov     al, [boot_drive]
+    mov     [0x500 + 76], eax
+
     ; Quick visual confirmation - draw corner pixels
     mov     byte [0xA0000], 0x0F            ; Top-left white
     mov     byte [0xA013F], 0x0F            ; Top-right white (319)
@@ -719,42 +1119,10 @@ protected_mode_entry:
 
     ; Jump to kernel with boot info pointer in EAX
     mov     eax, 0x500
-    jmp     0x100000
+    jmp     KERNEL_DEST_ADDR
 
 ; ============================================================================
-; Data Section (16-bit accessible)
-; ============================================================================
-
-[BITS 16]
-
-boot_drive:     db 0
-vga_mode:       db 0
-fb_address:     dd 0
-fb_width:       dw 0
-fb_height:      dw 0
-fb_bpp:         db 0
-fb_pitch:       dw 0
-
-; ROM info (populated by load_rom)
-rom_addr:       dd 0
-rom_size:       dd 0
-rom_title:      times 32 db 0
-
-; Messages (short to save space)
-msg_banner:     db 13, 10
-                db '=== gb-os ===', 13, 10, 0
-msg_e820:       db ' E820..', 0
-msg_a20:        db ' A20..', 0
-msg_vga:        db ' VGA..', 0
-msg_kernel:     db ' Kernel..', 0
-msg_rom:        db ' ROM..', 0
-msg_pmode:      db ' PM', 0
-msg_ok:         db 'ok', 13, 10, 0
-msg_fail:       db 'FAIL', 13, 10, 0
-msg_none:       db 'none', 13, 10, 0
-
-; ============================================================================
-; Pad to exactly 16KB (32 sectors)
+; Pad to exactly 16KB (32 sectors of 512 bytes = 8 CD sectors of 2048 bytes)
 ; ============================================================================
 
 times 16384 - ($ - $$) db 0

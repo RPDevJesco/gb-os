@@ -3,6 +3,12 @@
 # Builds the kernel and bootloader in an isolated container
 # with all necessary toolchain components.
 #
+# Supports:
+#   - Floppy disk images (1.44MB)
+#   - CD-ROM images with El Torito no-emulation boot
+#   - USB/HDD raw disk images
+#   - UEFI boot preparation (future)
+#
 # Usage:
 #   docker build -t gb-os-builder .
 #   docker run --rm -v "$(pwd)/output:/output" gb-os-builder
@@ -24,7 +30,7 @@ LABEL description="Build environment for gb-os (GameBoy bare-metal emulator)"
 # Avoid interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install build dependencies (including dos2unix for line ending conversion)
+# Install build dependencies
 RUN apt-get update && apt-get install -y \
     curl \
     build-essential \
@@ -62,8 +68,11 @@ COPY i686-rustacean.json ./
 COPY Makefile ./
 COPY build.sh /build.sh
 
+# Ensure .cargo config directory exists (config.toml is copied from repo)
+RUN mkdir -p kernel/.cargo
+
 # Fix line endings (Windows CRLF -> Unix LF) and make executable
-RUN dos2unix /build.sh && chmod +x /build.sh && mkdir -p /output
+RUN dos2unix /build.sh 2>/dev/null || true && chmod +x /build.sh && mkdir -p /output
 
 # Default command runs the GameBoy build
 CMD ["/build.sh", "--gameboy"]

@@ -1,13 +1,10 @@
 ; ============================================================================
-; boot.asm - Stage 1 Bootloader for RetroFuture GB
+; boot.asm - Stage 1 Bootloader for gb-os (Compact)
 ; ============================================================================
 ;
-; Minimal 512-byte boot sector. Loads stage 2 and jumps to it.
-;
-; Memory map:
-;   0x7C00  - This bootloader (512 bytes)
-;   0x7E00  - Stage 2 loaded here (16KB)
-;   0x0500  - Boot info structure (passed to kernel)
+; Minimal boot sector: detect media, load stage2, jump.
+;   - DL < 0x80: Floppy (CHS)
+;   - DL >= 0x80: HDD/CD (LBA)
 ;
 ; Assemble: nasm -f bin -o boot.bin boot.asm
 ; ============================================================================
@@ -15,169 +12,131 @@
 [BITS 16]
 [ORG 0x7C00]
 
-; ============================================================================
-; Constants
-; ============================================================================
-
-STAGE2_OFFSET   equ 0x7E00
-STAGE2_SECTORS  equ 32              ; 16KB for stage 2
-BOOT_DRIVE_ADDR equ 0x0500          ; Store boot drive here temporarily
-
-; Floppy geometry (1.44MB)
-SECTORS_PER_TRACK equ 18
-HEADS           equ 2
-
-; ============================================================================
-; Entry Point
-; ============================================================================
+STAGE2      equ 0x7E00
+SECTORS     equ 32                  ; 16KB for stage2
+BOOT_INFO   equ 0x0500
 
 start:
-    ; Set up segments
     cli
     xor     ax, ax
     mov     ds, ax
     mov     es, ax
     mov     ss, ax
-    mov     sp, 0x7C00              ; Stack grows down from bootloader
+    mov     sp, 0x7C00
     sti
 
-    ; Save boot drive (BIOS passes it in DL)
-    mov     [BOOT_DRIVE_ADDR], dl
+    mov     [boot_drv], dl
+    mov     [BOOT_INFO], dl         ; Pass to stage2
 
-    ; Set 80x25 text mode and clear screen
-    mov     ax, 0x0003
-    int     0x10
+    mov     si, msg
+    call    puts
 
-    ; Display loading message
-    mov     si, msg_boot
-    call    print_string
+    ; Floppy or LBA?
+    cmp     dl, 0x80
+    jb      .floppy
 
-    ; Reset disk system
+    ; Check LBA support
+    mov     ah, 0x41
+    mov     bx, 0x55AA
+    int     0x13
+    jc      .floppy
+    cmp     bx, 0xAA55
+    jne     .floppy
+
+    ; === LBA Mode ===
+    mov     byte [BOOT_INFO+1], 1
+    mov     cx, SECTORS
+    mov     word [dap_buf], STAGE2
+    mov     dword [dap_lba], 1
+
+.lba_loop:
+    mov     si, dap
+    mov     dl, [boot_drv]
+    mov     ah, 0x42
+    int     0x13
+    jc      .err
+    add     word [dap_buf], 512
+    inc     dword [dap_lba]
+    loop    .lba_loop
+    jmp     .done
+
+    ; === Floppy Mode (CHS) ===
+.floppy:
+    mov     byte [BOOT_INFO+1], 0
     xor     ax, ax
-    mov     dl, [BOOT_DRIVE_ADDR]
-    int     0x13
-    jc      disk_error
+    mov     dl, [boot_drv]
+    int     0x13                    ; Reset
 
-    ; Load stage 2 sector by sector
-    mov     word [cur_lba], 1       ; Start at LBA 1 (after boot sector)
-    mov     word [sectors_rem], STAGE2_SECTORS
-    mov     word [dest_ptr], STAGE2_OFFSET
+    mov     di, STAGE2
+    mov     cx, SECTORS
+    mov     word [lba], 1
 
-.load_loop:
-    cmp     word [sectors_rem], 0
-    je      .load_done
+.fdd_loop:
+    push    cx
 
-    ; Convert LBA to CHS
-    mov     ax, [cur_lba]
+    ; LBA -> CHS (18 spt, 2 heads)
+    mov     ax, [lba]
     xor     dx, dx
-    mov     cx, SECTORS_PER_TRACK
-    div     cx                      ; AX = track*heads + head, DX = sector-1
-    push    dx                      ; Save sector-1
+    mov     bx, 18
+    div     bx                      ; AX=cyl*2+head, DX=sect
+    mov     cl, dl
+    inc     cl                      ; Sector 1-18
     xor     dx, dx
-    mov     cx, HEADS
-    div     cx                      ; AX = cylinder, DX = head
-    mov     ch, al                  ; CH = cylinder
-    mov     dh, dl                  ; DH = head
-    pop     ax
-    inc     al
-    mov     cl, al                  ; CL = sector (1-based)
+    shr     ax, 1                   ; AX=cyl, CF=head
+    mov     ch, al
+    adc     dh, 0                   ; DH=head
 
-    ; Set up for read
-    mov     bx, [dest_ptr]
-    mov     si, 3                   ; Retry count
-
-.retry:
-    mov     ah, 0x02                ; BIOS read sectors
-    mov     al, 1                   ; One sector at a time
-    mov     dl, [BOOT_DRIVE_ADDR]
+    mov     bx, di
+    mov     ax, 0x0201
+    mov     dl, [boot_drv]
     int     0x13
-    jnc     .read_ok
+    jc      .err
 
-    ; Reset and retry
-    xor     ax, ax
-    mov     dl, [BOOT_DRIVE_ADDR]
-    int     0x13
-    dec     si
-    jnz     .retry
-    jmp     disk_error
+    add     di, 512
+    inc     word [lba]
+    pop     cx
+    loop    .fdd_loop
 
-.read_ok:
-    ; Progress dot
-    mov     ax, 0x0E2E
-    int     0x10
-
-    ; Advance
-    add     word [dest_ptr], 512
-    inc     word [cur_lba]
-    dec     word [sectors_rem]
-    jmp     .load_loop
-
-.load_done:
-    ; Print OK
+.done:
     mov     si, msg_ok
-    call    print_string
+    call    puts
+    cmp     word [STAGE2], 0x5247   ; 'GR' magic
+    jne     .err
+    mov     dl, [boot_drv]
+    jmp     STAGE2 + 2
 
-    ; Verify stage 2 magic
-    cmp     word [STAGE2_OFFSET], 0x5247  ; 'GR' for GameBoy Retro
-    jne     stage2_error
-
-    ; Jump to stage 2 (skip magic bytes)
-    mov     dl, [BOOT_DRIVE_ADDR]
-    jmp     0x0000:STAGE2_OFFSET + 2
-
-; ============================================================================
-; Error Handlers
-; ============================================================================
-
-disk_error:
-    mov     si, msg_disk_err
-    jmp     halt
-
-stage2_error:
-    mov     si, msg_stage2_err
-    jmp     halt
-
-halt:
-    call    print_string
+.err:
+    mov     si, msg_er
+    call    puts
+.hlt:
     cli
-.loop:
     hlt
-    jmp     .loop
+    jmp     .hlt
 
-; ============================================================================
-; Print String (SI = null-terminated string)
-; ============================================================================
-
-print_string:
-    pusha
+puts:
     mov     ah, 0x0E
-.loop:
+.lp:
     lodsb
     test    al, al
-    jz      .done
+    jz      .dn
     int     0x10
-    jmp     .loop
-.done:
-    popa
+    jmp     .lp
+.dn:
     ret
 
-; ============================================================================
 ; Data
-; ============================================================================
+msg:        db 'gb-os', 0
+msg_ok:     db ' OK', 13, 10, 0
+msg_er:     db ' E!', 0
+boot_drv:   db 0
+lba:        dw 0
 
-msg_boot:       db 'gb-os', 13, 10, 'Loading', 0
-msg_ok:         db ' OK', 13, 10, 0
-msg_disk_err:   db 13, 10, 'Disk error!', 0
-msg_stage2_err: db 13, 10, 'Stage2 bad!', 0
-
-; Variables
-cur_lba:        dw 0
-sectors_rem:    dw 0
-dest_ptr:       dw 0
-
-; ============================================================================
-; Boot Sector Padding and Signature
-; ============================================================================
+; DAP (16 bytes)
+dap:        db 0x10, 0
+            dw 1
+dap_buf:    dw STAGE2
+            dw 0
+dap_lba:    dd 0, 0
 
 times 510 - ($ - $$) db 0
 dw 0xAA55
