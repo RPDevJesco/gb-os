@@ -1,4 +1,4 @@
-//! Boot Information Parser for RetroFutureGB
+//! Boot Information Parser for gb-os
 //!
 //! Parses the boot info structure created by stage2 bootloader at 0x500.
 //!
@@ -17,10 +17,35 @@
 //! 0x20    4     ROM address (0 if no ROM)
 //! 0x24    4     ROM size in bytes
 //! 0x28    32    ROM title (null-terminated)
+//! 0x48    4     Boot media type (0=floppy, 1=CD, 2=HDD)
+//! 0x4C    4     Boot drive number
 //! ```
 
 /// Magic value: 'GBOY' in little-endian
 pub const BOOT_MAGIC: u32 = 0x594F4247;
+
+/// Boot media types
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum BootMedia {
+    /// Floppy disk (CHS addressing)
+    Floppy = 0,
+    /// CD-ROM via El Torito (LBA addressing)
+    CdRom = 1,
+    /// Hard disk or USB (LBA addressing)
+    Hdd = 2,
+}
+
+impl From<u32> for BootMedia {
+    fn from(value: u32) -> Self {
+        match value {
+            0 => BootMedia::Floppy,
+            1 => BootMedia::CdRom,
+            2 => BootMedia::Hdd,
+            _ => BootMedia::Floppy,
+        }
+    }
+}
 
 /// Boot information passed from bootloader to kernel
 #[derive(Debug, Clone, Copy)]
@@ -46,6 +71,10 @@ pub struct BootInfo {
     pub rom_addr: u32,
     /// ROM size in bytes
     pub rom_size: u32,
+    /// Boot media type
+    pub boot_media_type: u32,
+    /// Boot drive number
+    pub boot_drive: u32,
 }
 
 /// Raw boot info structure as stored in memory
@@ -62,6 +91,8 @@ pub struct RawBootInfo {
     pub rom_addr: u32,
     pub rom_size: u32,
     pub rom_title: [u8; 32],
+    pub boot_media_type: u32,
+    pub boot_drive: u32,
 }
 
 impl BootInfo {
@@ -85,6 +116,8 @@ impl BootInfo {
             pitch: raw.pitch,
             rom_addr: raw.rom_addr,
             rom_size: raw.rom_size,
+            boot_media_type: raw.boot_media_type,
+            boot_drive: raw.boot_drive,
         }
     }
 
@@ -101,6 +134,21 @@ impl BootInfo {
     /// Check if a ROM is loaded
     pub fn has_rom(&self) -> bool {
         self.rom_addr != 0 && self.rom_size > 0
+    }
+
+    /// Get the boot media type
+    pub fn boot_media(&self) -> BootMedia {
+        BootMedia::from(self.boot_media_type)
+    }
+
+    /// Check if booted from CD-ROM
+    pub fn is_cd_boot(&self) -> bool {
+        self.boot_media() == BootMedia::CdRom
+    }
+
+    /// Check if booted from floppy
+    pub fn is_floppy_boot(&self) -> bool {
+        self.boot_media() == BootMedia::Floppy
     }
 
     /// Get ROM as a slice

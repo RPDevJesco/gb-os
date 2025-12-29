@@ -49,6 +49,7 @@ Usage: $0 [options]
 
 Build Options:
   --gameboy         Build GameBoy edition only (default)
+  --normal          Build normal edition only
   --both            Build both normal and GameBoy editions
   --rom FILE        Embed ROM into GameBoy ISO
   --tools           Build mkgamedisk tool only
@@ -65,6 +66,12 @@ Examples:
   $0 --rom tetris.gb              Build with embedded ROM
   $0 --both --rom pokemon.gb      Build both, GameBoy has ROM
   $0 --shell                      Debug in container
+
+Boot Methods:
+  The built images support:
+  - Floppy disk boot (gameboy-system.img)
+  - CD-ROM boot with no-emulation El Torito (gameboy-system.iso)
+  - USB/HDD boot (dd gameboy-system.img to drive)
 
 EOF
     exit 0
@@ -83,6 +90,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --gameboy)
             BUILD_MODE="--gameboy"
+            shift
+            ;;
+        --normal)
+            BUILD_MODE="--normal"
             shift
             ;;
         --both)
@@ -120,6 +131,7 @@ fi
 
 echo "========================================"
 echo "  gb-os Docker Builder"
+echo "  No-Emulation Boot Support"
 echo "========================================"
 echo ""
 
@@ -160,7 +172,7 @@ if [ -n "$ROM_FILE" ]; then
     ROM_DIR="$(dirname "$ROM_FILE")"
     ROM_NAME="$(basename "$ROM_FILE")"
     info "Embedding ROM: $ROM_NAME"
-    
+
     docker run --rm \
         -v "$OUTPUT_DIR:/output" \
         -v "$ROM_DIR:/input:ro" \
@@ -191,6 +203,14 @@ echo ""
 
 if [[ "$BUILD_MODE" == *"gameboy"* ]] || [[ "$BUILD_MODE" == "--both" ]]; then
     echo "To run GameBoy mode:"
-    echo "  qemu-system-i386 -cdrom $OUTPUT_DIR/gameboy-system.iso -boot d -m 256M"
+    echo ""
+    echo "  Floppy boot:"
+    echo "    qemu-system-i386 -fda $OUTPUT_DIR/gameboy-system.img -boot a -m 256M"
+    echo ""
+    echo "  CD-ROM boot (no-emulation):"
+    echo "    qemu-system-i386 -cdrom $OUTPUT_DIR/gameboy-system.iso -boot d -m 256M"
+    echo ""
+    echo "  USB/HDD installation:"
+    echo "    sudo dd if=$OUTPUT_DIR/gameboy-system.img of=/dev/sdX bs=512"
     echo ""
 fi

@@ -1,18 +1,22 @@
 ﻿# gb-os Makefile
 #
-# Builds bare-metal GameBoy emulator or normal gb-os.
+# Builds bare-metal GameBoy emulator with support for:
+#   - Floppy disk boot (legacy 1.44MB)
+#   - CD-ROM boot via El Torito no-emulation mode
+#   - USB/HDD boot (raw image)
 #
 # Quick Start (Docker - Recommended):
 #   ./docker-build.sh                    # Build GameBoy edition
 #   ./docker-build.sh --rom game.gb      # Build with embedded ROM
 #
 # Native Build Targets:
-#   make                - Build normal gb-os
-#   make gameboy        # Build GameBoy edition
+#   make                - Show help
+#   make gameboy        - Build GameBoy edition
+#   make normal         - Build normal edition
 #   make tools          - Build mkgamedisk ROM converter
 #   make game ROM=x     - Create game floppy from ROM file
-#   make run            - Run normal mode in QEMU
-#   make run-gb         - Run GameBoy mode in QEMU
+#   make run-gb         - Run GameBoy mode in QEMU (floppy)
+#   make run-gb-cd      - Run GameBoy mode in QEMU (CD)
 #   make docker         - Build via Docker
 #   make clean          - Remove build artifacts
 
@@ -45,14 +49,18 @@ KERNEL_BIN := $(BUILD_DIR)/kernel.bin
 NORMAL_IMG := $(BUILD_DIR)/rustacean.img
 GAMEBOY_IMG := $(BUILD_DIR)/gameboy-system.img
 
+# ISO images
+NORMAL_ISO := $(BUILD_DIR)/rustacean.iso
+GAMEBOY_ISO := $(BUILD_DIR)/gameboy-system.iso
+
 # Docker
 DOCKER_IMAGE := gb-os-builder
 
-.PHONY: all normal gameboy clean tools game run run-gb docker docker-shell help
+.PHONY: all normal gameboy clean tools game run run-gb run-cd run-gb-cd docker docker-shell help iso
 
 # Default: show help
 help:
-	@echo "gb-os Build System"
+	@echo "gb-os Build System (No-Emulation Boot)"
 	@echo ""
 	@echo "Docker Build (Recommended):"
 	@echo "  make docker              Build GameBoy edition via Docker"
@@ -62,37 +70,40 @@ help:
 	@echo "  make normal              Build normal gb-os"
 	@echo "  make gameboy             Build GameBoy edition"
 	@echo "  make tools               Build mkgamedisk tool"
-	@echo "  make game ROM=file.gb    Create game floppy from ROM"
+	@echo "  make game ROM=path.gb    Create game floppy from ROM"
 	@echo ""
-	@echo "Run:"
-	@echo "  make run                 Run normal mode in QEMU"
-	@echo "  make run-gb              Run GameBoy mode in QEMU"
+	@echo "Run in QEMU:"
+	@echo "  make run                 Run normal mode (floppy)"
+	@echo "  make run-gb              Run GameBoy mode (floppy)"
+	@echo "  make run-cd              Run normal mode (CD)"
+	@echo "  make run-gb-cd           Run GameBoy mode (CD)"
 	@echo ""
-	@echo "Other:"
+	@echo "Maintenance:"
 	@echo "  make clean               Remove build artifacts"
-	@echo ""
-
-# Convenience: just 'make' builds gameboy
-all: gameboy
+	@echo "  make distclean           Remove build + Docker image"
 
 # ============================================================================
-# Docker Build (Recommended)
+# Docker Build
 # ============================================================================
 
 docker:
-	@./docker-build.sh --gameboy
+	./docker-build.sh --gameboy
 
 docker-shell:
-	@./docker-build.sh --shell
+	./docker-build.sh --shell
 
 # ============================================================================
-# Normal gb-os Build
+# Normal Edition Build
 # ============================================================================
 
-normal: $(NORMAL_IMG)
+normal: $(NORMAL_IMG) $(NORMAL_ISO)
+	@mkdir -p $(OUTPUT_DIR)
+	cp $(NORMAL_IMG) $(OUTPUT_DIR)/
+	cp $(NORMAL_ISO) $(OUTPUT_DIR)/
 	@echo ""
-	@echo "=== Normal gb-os built ==="
-	@echo "Run with: make run"
+	@echo "Normal edition built:"
+	@echo "  $(OUTPUT_DIR)/rustacean.img (floppy)"
+	@echo "  $(OUTPUT_DIR)/rustacean.iso (CD, no-emulation boot)"
 
 $(NORMAL_IMG): $(BOOT_BIN) $(STAGE2_BIN) $(KERNEL_BIN)
 	$(DD) if=/dev/zero of=$@ bs=512 count=2880 2>/dev/null
@@ -107,11 +118,15 @@ $(STAGE2_BIN): $(BOOT_DIR)/stage2.asm | $(BUILD_DIR)
 # GameBoy Edition Build
 # ============================================================================
 
-gameboy: $(GAMEBOY_IMG)
+gameboy: $(GAMEBOY_IMG) $(GAMEBOY_ISO)
+	@mkdir -p $(OUTPUT_DIR)
+	cp $(GAMEBOY_IMG) $(OUTPUT_DIR)/
+	cp $(GAMEBOY_ISO) $(OUTPUT_DIR)/
+	cp $(KERNEL_BIN) $(OUTPUT_DIR)/
 	@echo ""
-	@echo "=== GameBoy Edition built ==="
-	@echo "Run with: make run-gb"
-	@echo "Create game floppy: make game ROM=path/to/game.gb"
+	@echo "GameBoy edition built:"
+	@echo "  $(OUTPUT_DIR)/gameboy-system.img (floppy)"
+	@echo "  $(OUTPUT_DIR)/gameboy-system.iso (CD, no-emulation boot)"
 
 $(GAMEBOY_IMG): $(BOOT_BIN) $(STAGE2_GB_BIN) $(KERNEL_BIN)
 	$(DD) if=/dev/zero of=$@ bs=512 count=2880 2>/dev/null
@@ -121,6 +136,42 @@ $(GAMEBOY_IMG): $(BOOT_BIN) $(STAGE2_GB_BIN) $(KERNEL_BIN)
 
 $(STAGE2_GB_BIN): $(BOOT_DIR)/stage2.asm | $(BUILD_DIR)
 	$(NASM) -f bin -DGAMEBOY_MODE -o $@ $<
+
+# ============================================================================
+# ISO Creation (No-Emulation El Torito Boot)
+# ============================================================================
+
+$(NORMAL_ISO): $(NORMAL_IMG) $(BOOT_BIN) $(STAGE2_BIN) $(KERNEL_BIN)
+	@mkdir -p $(BUILD_DIR)/iso/boot
+	# Create boot image for El Torito
+	$(DD) if=$(BOOT_BIN) of=$(BUILD_DIR)/iso/boot/boot.img bs=2048 count=1 conv=sync 2>/dev/null
+	$(DD) if=$(STAGE2_BIN) of=$(BUILD_DIR)/iso/boot/boot.img bs=2048 seek=1 conv=notrunc 2>/dev/null
+	$(DD) if=$(KERNEL_BIN) of=$(BUILD_DIR)/iso/boot/boot.img bs=2048 seek=9 conv=notrunc 2>/dev/null
+	cp $(NORMAL_IMG) $(BUILD_DIR)/iso/
+	# Create ISO with no-emulation boot
+	xorriso -as mkisofs -o $@ -V "RUSTACEAN_OS" \
+		-b boot/boot.img -no-emul-boot -boot-load-size 4 -boot-info-table \
+		-R -J $(BUILD_DIR)/iso/ 2>/dev/null || \
+	genisoimage -o $@ -V "RUSTACEAN_OS" \
+		-b boot/boot.img -no-emul-boot -boot-load-size 4 -boot-info-table \
+		-R -J $(BUILD_DIR)/iso/ 2>/dev/null
+	rm -rf $(BUILD_DIR)/iso
+
+$(GAMEBOY_ISO): $(GAMEBOY_IMG) $(BOOT_BIN) $(STAGE2_GB_BIN) $(KERNEL_BIN)
+	@mkdir -p $(BUILD_DIR)/iso/boot
+	# Create boot image for El Torito
+	$(DD) if=$(BOOT_BIN) of=$(BUILD_DIR)/iso/boot/boot.img bs=2048 count=1 conv=sync 2>/dev/null
+	$(DD) if=$(STAGE2_GB_BIN) of=$(BUILD_DIR)/iso/boot/boot.img bs=2048 seek=1 conv=notrunc 2>/dev/null
+	$(DD) if=$(KERNEL_BIN) of=$(BUILD_DIR)/iso/boot/boot.img bs=2048 seek=9 conv=notrunc 2>/dev/null
+	cp $(GAMEBOY_IMG) $(BUILD_DIR)/iso/
+	# Create ISO with no-emulation boot
+	xorriso -as mkisofs -o $@ -V "GAMEBOY_OS" \
+		-b boot/boot.img -no-emul-boot -boot-load-size 4 -boot-info-table \
+		-R -J $(BUILD_DIR)/iso/ 2>/dev/null || \
+	genisoimage -o $@ -V "GAMEBOY_OS" \
+		-b boot/boot.img -no-emul-boot -boot-load-size 4 -boot-info-table \
+		-R -J $(BUILD_DIR)/iso/ 2>/dev/null
+	rm -rf $(BUILD_DIR)/iso
 
 # ============================================================================
 # Common Build Steps
@@ -190,34 +241,18 @@ run: $(NORMAL_IMG)
 run-gb: $(GAMEBOY_IMG)
 	$(QEMU) -fda $< -boot a -m 256M
 
-# Run with CD-ROM image
-run-cd: $(BUILD_DIR)/rustacean.iso
+# Run with CD-ROM image (no-emulation boot)
+run-cd: $(NORMAL_ISO)
 	$(QEMU) -cdrom $< -boot d -m 256M
 
-run-gb-cd: $(BUILD_DIR)/gameboy-system.iso
+run-gb-cd: $(GAMEBOY_ISO)
 	$(QEMU) -cdrom $< -boot d -m 256M
 
-# ============================================================================
-# ISO Creation (optional)
-# ============================================================================
-
-$(BUILD_DIR)/rustacean.iso: $(NORMAL_IMG)
-	mkdir -p $(BUILD_DIR)/iso
-	cp $< $(BUILD_DIR)/iso/
-	genisoimage -o $@ -b rustacean.img -no-emul-boot -boot-load-size 4 \
-		-boot-info-table -V "RUSTACEAN_OS" $(BUILD_DIR)/iso/ 2>/dev/null || \
-	xorriso -as mkisofs -o $@ -b rustacean.img -no-emul-boot -boot-load-size 4 \
-		-boot-info-table -V "RUSTACEAN_OS" $(BUILD_DIR)/iso/ 2>/dev/null
-	rm -rf $(BUILD_DIR)/iso
-
-$(BUILD_DIR)/gameboy-system.iso: $(GAMEBOY_IMG)
-	mkdir -p $(BUILD_DIR)/iso
-	cp $< $(BUILD_DIR)/iso/
-	genisoimage -o $@ -b gameboy-system.img -no-emul-boot -boot-load-size 4 \
-		-boot-info-table -V "GAMEBOY_OS" $(BUILD_DIR)/iso/ 2>/dev/null || \
-	xorriso -as mkisofs -o $@ -b gameboy-system.img -no-emul-boot -boot-load-size 4 \
-		-boot-info-table -V "GAMEBOY_OS" $(BUILD_DIR)/iso/ 2>/dev/null
-	rm -rf $(BUILD_DIR)/iso
+# Run with USB emulation (raw disk image)
+run-usb: $(GAMEBOY_IMG)
+	$(QEMU) -drive file=$<,format=raw,if=none,id=usbdisk \
+		-device usb-ehci -device usb-storage,drive=usbdisk \
+		-boot menu=on -m 256M
 
 # ============================================================================
 # Clean

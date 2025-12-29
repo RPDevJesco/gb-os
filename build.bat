@@ -5,6 +5,7 @@ REM Usage: build.bat [options]
 REM
 REM Options:
 REM   --gameboy     Build GameBoy edition only (default)
+REM   --normal      Build normal edition only
 REM   --both        Build both normal and GameBoy editions
 REM   --rom FILE    Embed ROM file into GameBoy ISO
 REM   --tools       Build mkgamedisk tool only
@@ -42,6 +43,11 @@ if /i "%~1"=="--gameboy" (
     shift
     goto :parse_args
 )
+if /i "%~1"=="--normal" (
+    set BUILD_MODE=--normal
+    shift
+    goto :parse_args
+)
 if /i "%~1"=="--both" (
     set BUILD_MODE=--both
     shift
@@ -71,6 +77,7 @@ echo Usage: build.bat [options]
 echo.
 echo Build Options:
 echo   --gameboy         Build GameBoy edition only (default)
+echo   --normal          Build normal edition only
 echo   --both            Build both normal and GameBoy editions
 echo   --rom FILE        Embed ROM into GameBoy ISO
 echo   --tools           Build mkgamedisk tool only
@@ -81,6 +88,12 @@ echo   --shell           Open a shell in the build container
 echo.
 echo Other Options:
 echo   --help, -h        Show this help message
+echo.
+echo Boot Methods:
+echo   The built images support:
+echo   - Floppy disk boot (gameboy-system.img)
+echo   - CD-ROM boot with no-emulation El Torito (gameboy-system.iso)
+echo   - USB/HDD boot (write gameboy-system.img to drive)
 echo.
 echo Examples:
 echo   build.bat                           Build GameBoy edition
@@ -96,6 +109,7 @@ if not exist "%OUTPUT_DIR%" mkdir "%OUTPUT_DIR%"
 
 echo ========================================
 echo   gb-os Docker Builder
+echo   No-Emulation Boot Support
 echo ========================================
 echo.
 
@@ -132,7 +146,7 @@ if not "%ROM_FILE%"=="" (
         echo [ERROR] ROM file not found: %ROM_FILE%
         exit /b 1
     )
-    
+
     REM Get absolute path and separate directory/filename
     for %%F in ("%ROM_FILE%") do (
         set ROM_DIR=%%~dpF
@@ -140,7 +154,7 @@ if not "%ROM_FILE%"=="" (
     )
     REM Remove trailing backslash from ROM_DIR
     if "!ROM_DIR:~-1!"=="\" set ROM_DIR=!ROM_DIR:~0,-1!
-    
+
     echo [INFO] Embedding ROM: !ROM_NAME!
     docker run --rm -v "%OUTPUT_DIR%:/output" -v "!ROM_DIR!:/input:ro" -e "ROM_FILE=/input/!ROM_NAME!" %IMAGE_NAME% /build.sh %BUILD_MODE%
 ) else (
@@ -163,7 +177,12 @@ echo [OK] Build complete! Output in: %OUTPUT_DIR%
 echo.
 
 echo To run GameBoy mode:
-echo   qemu-system-i386 -cdrom "%OUTPUT_DIR%\gameboy-system.iso" -boot d -m 256M
+echo.
+echo   Floppy boot:
+echo     qemu-system-i386 -fda "%OUTPUT_DIR%\gameboy-system.img" -boot a -m 256M
+echo.
+echo   CD-ROM boot (no-emulation):
+echo     qemu-system-i386 -cdrom "%OUTPUT_DIR%\gameboy-system.iso" -boot d -m 256M
 echo.
 
 exit /b 0
