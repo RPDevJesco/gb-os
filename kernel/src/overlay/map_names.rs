@@ -1,0 +1,720 @@
+//! Pokemon Map Name Lookup Tables
+//!
+//! Contains map names for Gen 1 (Red/Blue/Yellow) and Gen 2 (Gold/Silver/Crystal).
+//! Map IDs are single bytes in Gen 1, and (group, number) pairs in Gen 2.
+
+/// Maximum map name length
+pub const MAX_MAP_NAME_LEN: usize = 18;
+
+// =============================================================================
+// Gen 1 Map Names (Red/Blue/Yellow)
+// =============================================================================
+
+/// Get Gen 1 map name by map ID (0-247)
+/// Returns "UNKNOWN" for invalid or unmapped IDs
+pub fn get_gen1_map_name(map_id: u8) -> &'static str {
+    if (map_id as usize) < GEN1_MAP_NAMES.len() {
+        GEN1_MAP_NAMES[map_id as usize]
+    } else {
+        "UNKNOWN"
+    }
+}
+
+/// Gen 1 map names indexed by map ID
+/// Based on pokered/pokeyellow disassembly
+static GEN1_MAP_NAMES: [&str; 248] = [
+    // 0x00
+    "PALLET TOWN",
+    "VIRIDIAN CITY",
+    "PEWTER CITY",
+    "CERULEAN CITY",
+    "LAVENDER TOWN",
+    "VERMILION CITY",
+    "CELADON CITY",
+    "FUCHSIA CITY",
+    // 0x08
+    "CINNABAR ISLAND",
+    "INDIGO PLATEAU",
+    "SAFFRON CITY",
+    "UNUSED",
+    "ROUTE 1",
+    "ROUTE 2",
+    "ROUTE 3",
+    "ROUTE 4",
+    // 0x10
+    "ROUTE 5",
+    "ROUTE 6",
+    "ROUTE 7",
+    "ROUTE 8",
+    "ROUTE 9",
+    "ROUTE 10",
+    "ROUTE 11",
+    "ROUTE 12",
+    // 0x18
+    "ROUTE 13",
+    "ROUTE 14",
+    "ROUTE 15",
+    "ROUTE 16",
+    "ROUTE 17",
+    "ROUTE 18",
+    "ROUTE 19",
+    "ROUTE 20",
+    // 0x20
+    "ROUTE 21",
+    "ROUTE 22",
+    "ROUTE 23",
+    "ROUTE 24",
+    "ROUTE 25",
+    "RED'S HOUSE 1F",
+    "RED'S HOUSE 2F",
+    "BLUE'S HOUSE",
+    // 0x28
+    "OAK'S LAB",
+    "VIRIDIAN POKECENTER",
+    "VIRIDIAN MART",
+    "VIRIDIAN SCHOOL",
+    "VIRIDIAN HOUSE",
+    "VIRIDIAN GYM",
+    "DIGLETTS CAVE",
+    "VIRIDIAN FOREST",
+    // 0x30
+    "MT MOON 1F",
+    "MT MOON B1F",
+    "MT MOON B2F",
+    "CERULEAN POKECENTER",
+    "CERULEAN GYM",
+    "CERULEAN BIKE SHOP",
+    "CERULEAN MART",
+    "MT MOON POKECENTER",
+    // 0x38
+    "CERULEAN TRASHED",
+    "CERULEAN HOUSE",
+    "ROUTE 5 GATE",
+    "UNDERGROUND PATH 1",
+    "DAYCARE",
+    "ROUTE 6 GATE",
+    "UNDERGROUND PATH 2",
+    "ROUTE 7 GATE",
+    // 0x40
+    "UNDERGROUND PATH 3",
+    "ROUTE 8 GATE",
+    "ROCK TUNNEL 1F",
+    "POWER PLANT",
+    "ROUTE 11 GATE 1F",
+    "DIGLETTS CAVE 2",
+    "ROUTE 11 GATE 2F",
+    "ROUTE 12 GATE",
+    // 0x48
+    "BILLS HOUSE",
+    "VERMILION POKECENTER",
+    "FAN CLUB",
+    "VERMILION MART",
+    "VERMILION GYM",
+    "VERMILION HOUSE 1",
+    "VERMILION DOCK",
+    "SS ANNE 1F",
+    // 0x50
+    "SS ANNE 2F",
+    "SS ANNE 3F",
+    "SS ANNE B1F",
+    "SS ANNE DECK",
+    "SS ANNE KITCHEN",
+    "SS ANNE CAPTAINS",
+    "SS ANNE 1F ROOMS",
+    "SS ANNE 2F ROOMS",
+    // 0x58
+    "SS ANNE B1F ROOMS",
+    "UNUSED",
+    "UNUSED",
+    "UNUSED",
+    "VICTORY ROAD 1F",
+    "UNUSED",
+    "UNUSED",
+    "UNUSED",
+    // 0x60
+    "UNUSED",
+    "LANCES ROOM",
+    "UNUSED",
+    "UNUSED",
+    "UNUSED",
+    "UNUSED",
+    "HALL OF FAME",
+    "UNDERGROUND PATH",
+    // 0x68
+    "CHAMPIONS ROOM",
+    "UNDERGROUND PATH 4",
+    "CELADON MART 1F",
+    "CELADON MART 2F",
+    "CELADON MART 3F",
+    "CELADON MART 4F",
+    "CELADON MART ROOF",
+    "CELADON MART ELEV",
+    // 0x70
+    "CELADON MANSION 1",
+    "CELADON MANSION 2",
+    "CELADON MANSION 3",
+    "CELADON MANSION RF",
+    "CELADON POKECENTER",
+    "CELADON GYM",
+    "GAME CORNER",
+    "CELADON MART 5F",
+    // 0x78
+    "GAME CORNER PRIZE",
+    "CELADON DINER",
+    "CELADON HOTEL",
+    "LAVENDER POKECENTER",
+    "POKEMON TOWER 1F",
+    "POKEMON TOWER 2F",
+    "POKEMON TOWER 3F",
+    "POKEMON TOWER 4F",
+    // 0x80
+    "POKEMON TOWER 5F",
+    "POKEMON TOWER 6F",
+    "POKEMON TOWER 7F",
+    "LAVENDER HOUSE 1",
+    "LAVENDER MART",
+    "LAVENDER HOUSE 2",
+    "FUCHSIA MART",
+    "FUCHSIA BILLS GP",
+    // 0x88
+    "FUCHSIA POKECENTER",
+    "WARDENS HOUSE",
+    "SAFARI ZONE GATE",
+    "FUCHSIA GYM",
+    "FUCHSIA MEETING",
+    "SEAFOAM 1F",
+    "SEAFOAM B1F",
+    "SEAFOAM B2F",
+    // 0x90
+    "SEAFOAM B3F",
+    "SEAFOAM B4F",
+    "VERMILION HOUSE 2",
+    "FUCHSIA HOUSE 2",
+    "SAFARI ZONE EAST",
+    "SAFARI ZONE NORTH",
+    "SAFARI ZONE WEST",
+    "SAFARI ZONE CENTER",
+    // 0x98
+    "SAFARI ZONE REST 1",
+    "SAFARI ZONE SECRET",
+    "SAFARI ZONE REST 2",
+    "SAFARI ZONE REST 3",
+    "SAFARI ZONE REST 4",
+    "UNKNOWN DUNGEON 2F",
+    "UNKNOWN DUNGEON B1",
+    "UNKNOWN DUNGEON 1F",
+    // 0xA0
+    "NAME RATER",
+    "CERULEAN HOUSE 2",
+    "UNUSED",
+    "ROCK TUNNEL B1F",
+    "SILPH CO 1F",
+    "SILPH CO 2F",
+    "SILPH CO 3F",
+    "SILPH CO 4F",
+    // 0xA8
+    "SILPH CO 5F",
+    "SILPH CO 6F",
+    "SILPH CO 7F",
+    "SILPH CO 8F",
+    "POKEMON MANSION 1",
+    "CINNABAR GYM",
+    "CINNABAR LAB 1",
+    "CINNABAR LAB 2",
+    // 0xB0
+    "CINNABAR LAB 3",
+    "CINNABAR LAB 4",
+    "CINNABAR POKECENTER",
+    "CINNABAR MART",
+    "CINNABAR MART COPY",
+    "INDIGO POKECENTER",
+    "COPYCATS HOUSE 1F",
+    "COPYCATS HOUSE 2F",
+    // 0xB8
+    "FIGHTING DOJO",
+    "SAFFRON GYM",
+    "SAFFRON HOUSE 1",
+    "SAFFRON MART",
+    "SILPH CO 9F",
+    "SAFFRON POKECENTER",
+    "SAFFRON HOUSE 2",
+    "ROUTE 15 GATE 1F",
+    // 0xC0
+    "ROUTE 15 GATE 2F",
+    "ROUTE 16 GATE 1F",
+    "ROUTE 16 GATE 2F",
+    "ROUTE 16 HOUSE",
+    "ROUTE 12 HOUSE",
+    "ROUTE 18 GATE 1F",
+    "ROUTE 18 GATE 2F",
+    "SEAFOAM POKECENTER",
+    // 0xC8
+    "ROUTE 22 GATE",
+    "VICTORY ROAD 2F",
+    "ROUTE 12 GATE 2F",
+    "VERMILION HOUSE 3",
+    "DIGLETTS CAVE 3",
+    "VICTORY ROAD 3F",
+    "ROCKET HIDEOUT 1",
+    "ROCKET HIDEOUT 2",
+    // 0xD0
+    "ROCKET HIDEOUT 3",
+    "ROCKET HIDEOUT 4",
+    "ROCKET HIDEOUT ELV",
+    "UNUSED",
+    "UNUSED",
+    "UNUSED",
+    "SILPH CO 10F",
+    "SILPH CO 11F",
+    // 0xD8
+    "UNUSED",
+    "POKEMON MANSION 2",
+    "POKEMON MANSION 3",
+    "POKEMON MANSION B1",
+    "SAFARI ZONE GATE 2",
+    "UNUSED",
+    "UNUSED",
+    "UNUSED",
+    // 0xE0
+    "ROUTE 23 BADGE 1",
+    "ROUTE 23 BADGE 2",
+    "ROUTE 23 BADGE 3",
+    "ROUTE 23 BADGE 4",
+    "ROUTE 23 BADGE 5",
+    "ROUTE 23 BADGE 6",
+    "ROUTE 23 BADGE 7",
+    "ROUTE 23 BADGE 8",
+    // 0xE8
+    "CAVE",
+    "LORELEIS ROOM",
+    "BRUNOS ROOM",
+    "AGATHAS ROOM",
+    "UNUSED",
+    "UNUSED",
+    "UNUSED",
+    "UNUSED",
+    // 0xF0
+    "UNUSED",
+    "UNUSED",
+    "UNUSED",
+    "UNUSED",
+    "UNUSED",
+    "UNUSED",
+    "UNUSED",
+    "UNUSED",
+];
+
+// =============================================================================
+// Gen 2 Map Names (Gold/Silver/Crystal)
+// =============================================================================
+
+/// Get Gen 2 map name by map group and number
+/// Returns "UNKNOWN" for invalid or unmapped IDs
+pub fn get_gen2_map_name(group: u8, number: u8) -> &'static str {
+    // Gen 2 uses (group, number) pairs
+    // We'll look up from a combined index or use a match
+    match (group, number) {
+        // Group 1: Olivine / Route
+        (1, 1) => "OLIVINE POKECENTER",
+        (1, 2) => "OLIVINE GYM",
+        (1, 3) => "OLIVINE CAFE",
+        (1, 4) => "OLIVINE MART",
+        (1, 5) => "ROUTE 38 POKEMON",
+        (1, 6) => "ROUTE 39 FARMHOUSE",
+        (1, 7) => "ROUTE 39 BARN",
+
+        // Group 2: Mahogany
+        (2, 1) => "MAHOGANY MART",
+        (2, 2) => "MAHOGANY POKECENTER",
+        (2, 3) => "MAHOGANY GYM",
+
+        // Group 3: Dungeons
+        (3, 1) => "SPROUT TOWER 1F",
+        (3, 2) => "SPROUT TOWER 2F",
+        (3, 3) => "SPROUT TOWER 3F",
+        (3, 4) => "TIN TOWER 1F",
+        (3, 5) => "TIN TOWER 2F",
+        (3, 6) => "TIN TOWER 3F",
+        (3, 7) => "TIN TOWER 4F",
+        (3, 8) => "TIN TOWER 5F",
+        (3, 9) => "TIN TOWER 6F",
+        (3, 10) => "TIN TOWER 7F",
+        (3, 11) => "TIN TOWER 8F",
+        (3, 12) => "TIN TOWER 9F",
+        (3, 13) => "TIN TOWER ROOF",
+        (3, 14) => "BURNED TOWER 1F",
+        (3, 15) => "BURNED TOWER B1F",
+        (3, 16) => "NATIONAL PARK",
+        (3, 17) => "NATIONAL PARK BUG",
+        (3, 18) => "RADIO TOWER 1F",
+        (3, 19) => "RADIO TOWER 2F",
+        (3, 20) => "RADIO TOWER 3F",
+        (3, 21) => "RADIO TOWER 4F",
+        (3, 22) => "RADIO TOWER 5F",
+        (3, 23) => "RUINS OF ALPH",
+        (3, 24) => "RUINS INNER 1",
+        (3, 25) => "RUINS INNER 2",
+        (3, 26) => "RUINS INNER 3",
+        (3, 27) => "RUINS INNER 4",
+        (3, 28) => "RUINS RESEARCH",
+        (3, 29) => "RUINS HO-OH",
+        (3, 30) => "RUINS KABUTO",
+        (3, 31) => "RUINS OMANYTE",
+        (3, 32) => "RUINS AERODACTYL",
+        (3, 33) => "UNION CAVE 1F",
+        (3, 34) => "UNION CAVE B1F",
+        (3, 35) => "UNION CAVE B2F",
+        (3, 36) => "SLOWPOKE WELL B1F",
+        (3, 37) => "SLOWPOKE WELL B2F",
+        (3, 38) => "LIGHTHOUSE 1F",
+        (3, 39) => "LIGHTHOUSE 2F",
+        (3, 40) => "LIGHTHOUSE 3F",
+        (3, 41) => "LIGHTHOUSE 4F",
+        (3, 42) => "LIGHTHOUSE 5F",
+        (3, 43) => "LIGHTHOUSE 6F",
+
+        // Group 4: Ecruteak
+        (4, 1) => "ECRUTEAK POKECENTER",
+        (4, 2) => "ECRUTEAK LUGIA",
+        (4, 3) => "DANCE THEATER",
+        (4, 4) => "ECRUTEAK MART",
+        (4, 5) => "ECRUTEAK GYM",
+        (4, 6) => "ECRUTEAK ITEMFIND",
+        (4, 7) => "ECRUTEAK HOUSE",
+
+        // Group 5: Blackthorn
+        (5, 1) => "BLACKTHORN POKECENTER",
+        (5, 2) => "BLACKTHORN GYM 1F",
+        (5, 3) => "BLACKTHORN GYM 2F",
+        (5, 4) => "BLACKTHORN MART",
+        (5, 5) => "MOVE DELETERS",
+        (5, 6) => "ROUTE 45 HOUSE",
+        (5, 7) => "BLACKTHORN HOUSE",
+        (5, 8) => "DRAGONS DEN 1F",
+        (5, 9) => "DRAGONS DEN B1F",
+        (5, 10) => "DRAGON SHRINE",
+        (5, 11) => "ICE PATH 1F",
+        (5, 12) => "ICE PATH B1F",
+        (5, 13) => "ICE PATH B2F MAHOG",
+        (5, 14) => "ICE PATH B2F BLACK",
+        (5, 15) => "ICE PATH B3F",
+        (5, 16) => "WHIRL ISLAND NW",
+        (5, 17) => "WHIRL ISLAND NE",
+        (5, 18) => "WHIRL ISLAND SW",
+        (5, 19) => "WHIRL ISLAND CAVE",
+        (5, 20) => "WHIRL ISLAND SE",
+        (5, 21) => "WHIRL ISLAND B1F",
+        (5, 22) => "WHIRL ISLAND B2F",
+        (5, 23) => "WHIRL ISLAND LUGIA",
+
+        // Group 6: Cinnabar
+        (6, 1) => "CINNABAR POKECENTER",
+        (6, 2) => "ROUTE 19 POKEMON",
+        (6, 3) => "SEAFOAM GYM",
+
+        // Group 7: Cerulean
+        (7, 1) => "CERULEAN POKECENTER",
+        (7, 2) => "CERULEAN GYM",
+        (7, 3) => "CERULEAN BIKE SHOP",
+        (7, 4) => "CERULEAN MART",
+        (7, 5) => "CERULEAN TRASHED",
+        (7, 6) => "CERULEAN HOUSE",
+        (7, 7) => "ROUTE 9 POKEMON",
+        (7, 8) => "POWER PLANT",
+        (7, 9) => "BILLS HOUSE",
+        (7, 10) => "ROCK TUNNEL 1F",
+        (7, 11) => "ROCK TUNNEL B1F",
+        (7, 12) => "ROUTE 10 POKECENTER",
+
+        // Group 8: Azalea
+        (8, 1) => "AZALEA POKECENTER",
+        (8, 2) => "CHARCOAL KILN",
+        (8, 3) => "AZALEA MART",
+        (8, 4) => "KURTS HOUSE",
+        (8, 5) => "AZALEA GYM",
+        (8, 6) => "ILEX FOREST",
+        (8, 7) => "ILEX FOREST GATE",
+
+        // Group 9: Lake of Rage
+        (9, 1) => "LAKE OF RAGE",
+        (9, 2) => "LAKE OF RAGE POKEMON",
+        (9, 3) => "LAKE OF RAGE HOUSE",
+
+        // Group 10: Violet
+        (10, 1) => "VIOLET POKECENTER",
+        (10, 2) => "VIOLET MART",
+        (10, 3) => "VIOLET GYM",
+        (10, 4) => "EARLS ACADEMY",
+        (10, 5) => "VIOLET NICKNAME",
+        (10, 6) => "VIOLET KYLES",
+        (10, 7) => "ROUTE 32 POKECENTER",
+        (10, 8) => "ROUTE 32 POKEMON",
+        (10, 9) => "ROUTE 35 POKEMON",
+        (10, 10) => "ROUTE 35 GATE",
+        (10, 11) => "ROUTE 36 POKEMON",
+        (10, 12) => "ROUTE 36 GATE",
+
+        // Group 11: Goldenrod
+        (11, 1) => "GOLDENROD POKECENTER",
+        (11, 2) => "GOLDENROD GYM",
+        (11, 3) => "GOLDENROD BIKE SHOP",
+        (11, 4) => "GOLDENROD BILLS",
+        (11, 5) => "GOLDENROD HAPPINESS",
+        (11, 6) => "GOLDENROD NAME RATER",
+        (11, 7) => "GOLDENROD DEPT 1F",
+        (11, 8) => "GOLDENROD DEPT 2F",
+        (11, 9) => "GOLDENROD DEPT 3F",
+        (11, 10) => "GOLDENROD DEPT 4F",
+        (11, 11) => "GOLDENROD DEPT 5F",
+        (11, 12) => "GOLDENROD DEPT 6F",
+        (11, 13) => "GOLDENROD DEPT ELEV",
+        (11, 14) => "GOLDENROD DEPT ROOF",
+        (11, 15) => "GAME CORNER",
+        (11, 16) => "GAME CORNER PRIZE",
+        (11, 17) => "GOLDENROD BASEMENT",
+        (11, 18) => "GOLDENROD BASEMENT 2",
+        (11, 19) => "GOLDENROD BASEMENT 3",
+        (11, 20) => "GOLDENROD FLOWER",
+        (11, 21) => "GOLDENROD PP HOUSE",
+        (11, 22) => "GOLDENROD HOUSE",
+        (11, 23) => "UNDERGROUND SWITCH",
+        (11, 24) => "UNDERGROUND WARE",
+        (11, 25) => "MT MOON",
+        (11, 26) => "MT MOON SQUARE",
+        (11, 27) => "MT MOON SHOP",
+
+        // Group 12: Vermilion
+        (12, 1) => "VERMILION POKECENTER",
+        (12, 2) => "VERMILION FAN CLUB",
+        (12, 3) => "VERMILION MART",
+        (12, 4) => "VERMILION GYM",
+        (12, 5) => "VERMILION HOUSE",
+        (12, 6) => "VERMILION DOCK",
+        (12, 7) => "DIGLETTS CAVE",
+        (12, 8) => "ROUTE 6 POKEHOUSE",
+
+        // Group 13: Pewter/Viridian
+        (13, 1) => "PEWTER NIDORAN",
+        (13, 2) => "PEWTER POKECENTER",
+        (13, 3) => "PEWTER GYM",
+        (13, 4) => "PEWTER MART",
+        (13, 5) => "PEWTER SNOOZEHOUSE",
+        (13, 6) => "VIRIDIAN POKECENTER",
+        (13, 7) => "VIRIDIAN MART",
+        (13, 8) => "VIRIDIAN GYM",
+        (13, 9) => "VIRIDIAN NICKNAME",
+        (13, 10) => "ROUTE 2 POKEMON",
+        (13, 11) => "ROUTE 2 GATE",
+        (13, 12) => "VICTORY ROAD",
+
+        // Group 14: Pallet/Cinnabar
+        (14, 1) => "REDS HOUSE 1F",
+        (14, 2) => "REDS HOUSE 2F",
+        (14, 3) => "BLUES HOUSE",
+        (14, 4) => "OAKS LAB",
+        (14, 5) => "SILVER CAVE 1",
+        (14, 6) => "SILVER CAVE 2",
+        (14, 7) => "SILVER CAVE 3",
+        (14, 8) => "SILVER CAVE 4",
+
+        // Group 15: Fuchsia
+        (15, 1) => "FUCHSIA POKECENTER",
+        (15, 2) => "FUCHSIA MART",
+        (15, 3) => "SAFARI ZONE GATE",
+        (15, 4) => "FUCHSIA GYM",
+        (15, 5) => "FUCHSIA BILLS GP",
+        (15, 6) => "FUCHSIA MEETING",
+        (15, 7) => "ROUTE 15 POKEMON",
+
+        // Group 16: Lavender
+        (16, 1) => "LAVENDER POKECENTER",
+        (16, 2) => "LAVENDER HOUSE",
+        (16, 3) => "LAVENDER MART",
+        (16, 4) => "SOUL HOUSE",
+        (16, 5) => "RADIO TOWER",
+        (16, 6) => "ROUTE 8 POKEMON",
+        (16, 7) => "ROCK TUNNEL 1F G2",
+        (16, 8) => "ROCK TUNNEL B1F G2",
+
+        // Group 17: Celadon
+        (17, 1) => "CELADON POKECENTER",
+        (17, 2) => "CELADON GYM",
+        (17, 3) => "GAME CORNER",
+        (17, 4) => "GAME CORNER PRIZE",
+        (17, 5) => "CELADON DEPT 1F",
+        (17, 6) => "CELADON DEPT 2F",
+        (17, 7) => "CELADON DEPT 3F",
+        (17, 8) => "CELADON DEPT 4F",
+        (17, 9) => "CELADON DEPT 5F",
+        (17, 10) => "CELADON DEPT 6F",
+        (17, 11) => "CELADON MANSION 1F",
+        (17, 12) => "CELADON MANSION 2F",
+        (17, 13) => "CELADON MANSION 3F",
+        (17, 14) => "CELADON MANSION RF",
+        (17, 15) => "CELADON HOTEL",
+        (17, 16) => "ROUTE 16 POKEMON",
+
+        // Group 18: Saffron
+        (18, 1) => "SAFFRON POKECENTER",
+        (18, 2) => "SAFFRON GYM",
+        (18, 3) => "SAFFRON MART",
+        (18, 4) => "COPYCATS HOUSE 1F",
+        (18, 5) => "COPYCATS HOUSE 2F",
+        (18, 6) => "FIGHTING DOJO",
+        (18, 7) => "SILPH CO 1F",
+        (18, 8) => "ROUTE 5 POKEMON",
+        (18, 9) => "ROUTE 5 GATE",
+        (18, 10) => "ROUTE 7 POKEMON",
+
+        // Group 19: Cherrygrove
+        (19, 1) => "CHERRYGROVE POKECENTER",
+        (19, 2) => "CHERRYGROVE GYM",
+        (19, 3) => "CHERRYGROVE MART",
+        (19, 4) => "CHERRYGROVE HOUSE",
+        (19, 5) => "GUIDE GENTS HOUSE",
+        (19, 6) => "CHERRYGROVE BAY",
+        (19, 7) => "ROUTE 30 POKEMON",
+        (19, 8) => "ROUTE 30 HOUSE",
+
+        // Group 20: New Bark
+        (20, 1) => "NEW BARK POKECENTER",
+        (20, 2) => "PLAYERS HOUSE 1F",
+        (20, 3) => "PLAYERS HOUSE 2F",
+        (20, 4) => "ELMS LAB",
+        (20, 5) => "ELMS HOUSE",
+        (20, 6) => "ROUTE 26 POKEMON",
+        (20, 7) => "ROUTE 26 HEALING",
+        (20, 8) => "ROUTE 27 POKEMON",
+        (20, 9) => "ROUTE 29 POKEMON",
+
+        // Group 21: Cianwood
+        (21, 1) => "CIANWOOD POKECENTER",
+        (21, 2) => "CIANWOOD PHARMACY",
+        (21, 3) => "CIANWOOD PHOTO",
+        (21, 4) => "CIANWOOD GYM",
+        (21, 5) => "CIANWOOD LUGIA",
+        (21, 6) => "BATTLE TOWER 1F",
+        (21, 7) => "BATTLE TOWER",
+        (21, 8) => "BATTLE TOWER ELEV",
+        (21, 9) => "BATTLE TOWER HALL",
+        (21, 10) => "ROUTE 40 POKEMON",
+        (21, 11) => "ROUTE 42 POKEMON",
+
+        // Group 22: Pokemon League
+        (22, 1) => "INDIGO POKECENTER",
+        (22, 2) => "WILLS ROOM",
+        (22, 3) => "KOGAS ROOM",
+        (22, 4) => "BRUNOS ROOM",
+        (22, 5) => "KARENS ROOM",
+        (22, 6) => "LANCES ROOM",
+        (22, 7) => "HALL OF FAME",
+
+        // Group 23: Fast Ship
+        (23, 1) => "FAST SHIP 1F",
+        (23, 2) => "FAST SHIP CABINS 1",
+        (23, 3) => "FAST SHIP CABINS 2",
+        (23, 4) => "FAST SHIP CABINS 3",
+        (23, 5) => "FAST SHIP CABINS 4",
+        (23, 6) => "FAST SHIP B1F",
+        (23, 7) => "OLIVINE PORT",
+        (23, 8) => "VERMILION PORT",
+
+        // Group 24: Routes (Johto)
+        (24, 1) => "ROUTE 29",
+        (24, 2) => "ROUTE 30",
+        (24, 3) => "ROUTE 31",
+        (24, 4) => "ROUTE 32",
+        (24, 5) => "ROUTE 33",
+        (24, 6) => "ROUTE 34",
+        (24, 7) => "ROUTE 35",
+        (24, 8) => "ROUTE 36",
+        (24, 9) => "ROUTE 37",
+        (24, 10) => "ROUTE 38",
+        (24, 11) => "ROUTE 39",
+        (24, 12) => "ROUTE 40",
+        (24, 13) => "ROUTE 41",
+        (24, 14) => "ROUTE 42",
+        (24, 15) => "ROUTE 43",
+        (24, 16) => "ROUTE 44",
+        (24, 17) => "ROUTE 45",
+        (24, 18) => "ROUTE 46",
+
+        // Group 25: Routes (Kanto)
+        (25, 1) => "ROUTE 1",
+        (25, 2) => "ROUTE 2",
+        (25, 3) => "ROUTE 3",
+        (25, 4) => "ROUTE 4",
+        (25, 5) => "ROUTE 5",
+        (25, 6) => "ROUTE 6",
+        (25, 7) => "ROUTE 7",
+        (25, 8) => "ROUTE 8",
+        (25, 9) => "ROUTE 9",
+        (25, 10) => "ROUTE 10",
+        (25, 11) => "ROUTE 11",
+        (25, 12) => "ROUTE 12",
+        (25, 13) => "ROUTE 13",
+        (25, 14) => "ROUTE 14",
+        (25, 15) => "ROUTE 15",
+        (25, 16) => "ROUTE 16",
+        (25, 17) => "ROUTE 17",
+        (25, 18) => "ROUTE 18",
+        (25, 19) => "ROUTE 19",
+        (25, 20) => "ROUTE 20",
+        (25, 21) => "ROUTE 21",
+        (25, 22) => "ROUTE 22",
+        (25, 23) => "ROUTE 26",
+        (25, 24) => "ROUTE 27",
+        (25, 25) => "ROUTE 28",
+
+        // Group 26: Cities
+        (26, 1) => "PALLET TOWN",
+        (26, 2) => "VIRIDIAN CITY",
+        (26, 3) => "PEWTER CITY",
+        (26, 4) => "CERULEAN CITY",
+        (26, 5) => "LAVENDER TOWN",
+        (26, 6) => "VERMILION CITY",
+        (26, 7) => "CELADON CITY",
+        (26, 8) => "FUCHSIA CITY",
+        (26, 9) => "CINNABAR ISLAND",
+        (26, 10) => "INDIGO PLATEAU",
+        (26, 11) => "SAFFRON CITY",
+        (26, 12) => "NEW BARK TOWN",
+        (26, 13) => "CHERRYGROVE CITY",
+        (26, 14) => "VIOLET CITY",
+        (26, 15) => "AZALEA TOWN",
+        (26, 16) => "CIANWOOD CITY",
+        (26, 17) => "GOLDENROD CITY",
+        (26, 18) => "OLIVINE CITY",
+        (26, 19) => "ECRUTEAK CITY",
+        (26, 20) => "MAHOGANY TOWN",
+        (26, 21) => "LAKE OF RAGE",
+        (26, 22) => "BLACKTHORN CITY",
+        (26, 23) => "SILVER CAVE",
+        (26, 24) => "DARK CAVE VIOLET",
+        (26, 25) => "DARK CAVE BLACK",
+        (26, 26) => "TOHJO FALLS",
+
+        _ => "UNKNOWN",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_gen1_map_names() {
+        assert_eq!(get_gen1_map_name(0), "PALLET TOWN");
+        assert_eq!(get_gen1_map_name(1), "VIRIDIAN CITY");
+        assert_eq!(get_gen1_map_name(12), "ROUTE 1");
+        assert_eq!(get_gen1_map_name(255), "UNKNOWN");
+    }
+
+    #[test]
+    fn test_gen2_map_names() {
+        assert_eq!(get_gen2_map_name(26, 1), "PALLET TOWN");
+        assert_eq!(get_gen2_map_name(26, 12), "NEW BARK TOWN");
+        assert_eq!(get_gen2_map_name(24, 1), "ROUTE 29");
+        assert_eq!(get_gen2_map_name(99, 99), "UNKNOWN");
+    }
+}
