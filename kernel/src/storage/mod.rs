@@ -7,6 +7,8 @@ pub mod pci;
 pub mod ata;
 pub mod fat32;
 
+pub mod savefile;
+
 use crate::arch::x86::io::outb;
 
 // =============================================================================
