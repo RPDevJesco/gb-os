@@ -471,22 +471,23 @@ impl OverlayRenderer {
     // =========================================================================
 
     pub fn render_bottom_panel(&self, fb: &mut [u8], reader: &RamReader) {
+        let region = Region::bottom_sidebar();
         let party = reader.read_party();
         let slot_width = 26usize;
         let bar_width = 22usize;
 
         // Clear bottom area
-        let bottom_h = SCREEN_HEIGHT - GB_BOTTOM;
-        self.draw_rect(fb, GB_X, GB_BOTTOM, GB_WIDTH, bottom_h, BG);
+        self.draw_rect(fb, region.x, region.y, region.width, region.height, BG);
+
+        // Center the party slots within the region
+        let total_width = 6 * slot_width;
+        let start_x = region.x + (region.width - total_width) / 2;
 
         for i in 0..6 {
-            let slot_x = GB_X + 1 + i * slot_width;
-            if slot_x + bar_width > GB_X + GB_WIDTH {
-                break;
-            }
+            let slot_x = start_x + i * slot_width;
 
             if let Some(pokemon) = party.pokemon[i].as_ref() {
-                let bar_y = GB_BOTTOM + 4;
+                let bar_y = region.y + 4;
                 let hp_pct = if pokemon.hp_max > 0 {
                     (pokemon.hp_current as u32 * 100) / pokemon.hp_max as u32
                 } else {
@@ -509,7 +510,7 @@ impl OverlayRenderer {
                 self.draw_number(fb, slot_x, lv_y, pokemon.level as u32, TEXT_DIM);
             } else {
                 // Empty slot
-                self.draw_str(fb, slot_x, GB_BOTTOM + 4, "--", TEXT_DIM);
+                self.draw_str(fb, slot_x, region.y + 4, "--", TEXT_DIM);
             }
         }
     }

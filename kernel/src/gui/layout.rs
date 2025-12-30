@@ -116,6 +116,17 @@ impl Region {
         Self::new(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT)
     }
 
+    /// Top sidebar (above Game Boy screen, full width)
+    pub const fn top_sidebar() -> Self {
+        Self::new(0, 0, SCREEN_WIDTH, GB_Y - GB_BORDER)
+    }
+
+    /// Bottom sidebar (below Game Boy screen, full width)
+    pub const fn bottom_sidebar() -> Self {
+        const START_Y: usize = GB_BOTTOM + GB_BORDER;
+        Self::new(0, START_Y, SCREEN_WIDTH, SCREEN_HEIGHT - START_Y)
+    }
+
     /// Right sidebar (where game overlay goes)
     /// Positioned 9px right of Game Boy screen edge to reduce overlap
     pub const fn right_sidebar() -> Self {
@@ -125,7 +136,8 @@ impl Region {
 
     /// Left sidebar (left of Game Boy screen)
     pub const fn left_sidebar() -> Self {
-        Self::new(0, 0, GB_X, SCREEN_HEIGHT)
+        const SIDEBAR_OFFSET: usize = 4;  // One badge width
+        Self::new(0, 0, GB_X - SIDEBAR_OFFSET, SCREEN_HEIGHT)
     }
 
     /// Main content area (Game Boy screen region)
