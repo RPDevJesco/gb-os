@@ -305,6 +305,8 @@ fn draw_gb_border(buffer: &mut [u8]) {
 fn run_gameboy_emulator_with_rom(rom_ptr: *const u8, rom_size: usize) -> ! {
     use alloc::vec::Vec;
     use crate::overlay::{Game, RamReader, render_overlay_efficient, init_overlay};
+    use crate::storage::savefile;
+    use crate::storage::savefile::SaveTracker;
 
     // ========================================================================
     // INITIALIZATION
@@ -333,6 +335,19 @@ fn run_gameboy_emulator_with_rom(rom_ptr: *const u8, rom_size: usize) -> ! {
             loop { unsafe { core::arch::asm!("hlt"); } }
         }
     };
+
+    // =========================================================================
+    // LOAD SAVE ON STARTUP
+    // =========================================================================
+    if device.ram_is_battery_backed() {
+        let _ = savefile::load_sram(&mut device);
+        // Ignore result - NoSaveFound is fine for new games
+    }
+
+    // =========================================================================
+    // CREATE SAVE TRACKER
+    // =========================================================================
+    let mut save_tracker = SaveTracker::new();
 
     // Detect game for overlay (do once at startup)
     let game = Game::detect(&device.romname());
@@ -373,6 +388,13 @@ fn run_gameboy_emulator_with_rom(rom_ptr: *const u8, rom_size: usize) -> ! {
         while cycles < CYCLES_PER_FRAME {
             cycles += device.do_cycle();
         }
+
+        // =====================================================================
+        // SAVE TRACKING - call every frame
+        // =====================================================================
+        // This detects when the game writes to SRAM (player selected SAVE)
+        // and persists to disk after writes settle (~2 seconds)
+        savefile::update(&mut save_tracker, &mut device);
 
         // ====================================================================
         // Render if GPU updated

@@ -124,6 +124,13 @@ pub mod red_blue {
     pub const COINS: u16 = 0xD5A4;              // 2 bytes BCD (Game Corner)
     pub const BADGES: u16 = 0xD356;             // 1 byte (bit flags)
 
+    // Enemy party / trainer
+    pub const ENEMY_PARTY_COUNT: u16 = 0xD89C;      // 1 byte (in trainer battles)
+
+    // Bag
+    pub const BAG_ITEM_COUNT: u16 = 0xD31D;         // Number of items in bag
+    pub const BAG_ITEM_DATA: u16 = 0xD31E;          // Item data (item_id, quantity pairs)
+
     // --- Play Time ---
     pub const PLAY_TIME_HOURS: u16 = 0xDA40;    // 2 bytes (max 255:59:59)
     pub const PLAY_TIME_MINUTES: u16 = 0xDA42;  // 1 byte
@@ -260,6 +267,13 @@ pub mod yellow {
     pub const MON_SPEED: u16 = 40;
     pub const MON_SPECIAL: u16 = 42;
 
+    // Enemy party / trainer
+    pub const ENEMY_PARTY_COUNT: u16 = 0xD89B;      // 1 byte (in trainer battles)
+
+    // Bag
+    pub const BAG_ITEM_COUNT: u16 = 0xD31C;         // Number of items in bag
+    pub const BAG_ITEM_DATA: u16 = 0xD31D;          // Item data (item_id, quantity pairs)
+
     // --- Pokedex ---
     pub const POKEDEX_OWNED: u16 = 0xD2F6;      // 19 bytes (bit flags, 151 Pokemon)
     pub const POKEDEX_SEEN: u16 = 0xD309;       // 19 bytes
@@ -324,6 +338,22 @@ pub mod gold_silver {
     pub const JOHTO_BADGES: u16 = 0xD57C;       // 1 byte (bit flags)
     pub const KANTO_BADGES: u16 = 0xD57D;       // 1 byte (bit flags)
 
+    // Enemy party
+    pub const ENEMY_PARTY_COUNT: u16 = 0xD0D4;      // 1 byte
+    pub const ENEMY_PARTY_SPECIES: u16 = 0xD0D5;    // 6 bytes
+
+    // Battle type (0=no battle, 1=wild, 2=trainer)
+    pub const BATTLE_MODE: u16 = 0xD116;            // 1 byte
+    pub const BATTLE_TYPE: u16 = 0xD117;            // 1 byte (right after BATTLE_MODE)
+
+    // Bag items (Gen 2 has multiple pockets)
+    pub const ITEMS_POCKET_COUNT: u16 = 0xD5B7;     // Number of items in Items pocket
+    pub const ITEMS_POCKET_DATA: u16 = 0xD5B8;      // Items pocket data (item_id, quantity pairs)
+    pub const KEY_ITEMS_COUNT: u16 = 0xD5E1;        // Number of key items
+    pub const KEY_ITEMS_DATA: u16 = 0xD5E2;         // Key items data
+    pub const BALLS_POCKET_COUNT: u16 = 0xD5FC;     // Number of ball types
+    pub const BALLS_POCKET_DATA: u16 = 0xD5FD;      // Balls pocket data
+
     // --- Play Time ---
     pub const PLAY_TIME_HOURS: u16 = 0xD1EB;    // 2 bytes
     pub const PLAY_TIME_MINUTES: u16 = 0xD1ED;  // 1 byte
@@ -378,9 +408,6 @@ pub mod gold_silver {
     pub const TIME_MINUTES: u16 = 0xD4B5;       // 1 byte
     pub const TIME_SECONDS: u16 = 0xD4B6;       // 1 byte
     pub const TIME_DAY: u16 = 0xD4B3;           // 1 byte (day of week)
-
-    // --- Battle ---
-    pub const BATTLE_MODE: u16 = 0xD116;          // 1 byte
 
     // Player's active Pokemon in battle
     pub const BATTLE_YOUR_SPECIES: u16 = 0xCB0C;  // 1 byte
@@ -447,6 +474,20 @@ pub mod crystal {
     pub const PARTY_MON_SIZE: u16 = 48;
     pub const PARTY_OT_NAMES: u16 = 0xDDFF;     // 11 bytes × 6
     pub const PARTY_NICKNAMES: u16 = 0xDE41;    // 11 bytes × 6
+
+    // Enemy party / trainer
+    pub const ENEMY_PARTY_COUNT: u16 = 0xD89C;      // 1 byte (in trainer battles)
+    pub const ENEMY_PARTY_SPECIES: u16 = 0xD0D5;    // 6 bytes
+
+    // Bag
+    pub const BAG_ITEM_COUNT: u16 = 0xD31D;         // Number of items in bag
+    pub const BAG_ITEM_DATA: u16 = 0xD31E;          // Item data (item_id, quantity pairs)
+    pub const ITEMS_POCKET_COUNT: u16 = 0xD892;
+    pub const ITEMS_POCKET_DATA: u16 = 0xD893;
+    pub const KEY_ITEMS_COUNT: u16 = 0xD8BC;
+    pub const KEY_ITEMS_DATA: u16 = 0xD8BD;
+    pub const BALLS_POCKET_COUNT: u16 = 0xD8D7;
+    pub const BALLS_POCKET_DATA: u16 = 0xD8D8;
 
     // --- Party Pokemon Structure Offsets (same as Gold/Silver) ---
     pub const MON_SPECIES: u16 = 0;
@@ -1415,6 +1456,101 @@ impl<'a> RamReader<'a> {
                 self.rb(crystal::ENEMY_MON_PP + 3) & 0x3F,
             ],
         })
+    }
+
+    /// Read map group for Gen 2 games
+    /// Returns 0 for Gen 1 games
+    pub fn read_map_group(&self) -> u8 {
+        match self.game {
+            Game::Gold | Game::Silver => self.rb(gold_silver::MAP_GROUP),
+            Game::Crystal => self.rb(crystal::MAP_GROUP),
+            _ => 0,
+        }
+    }
+
+    /// Read battle type
+    /// Returns: 0 = no battle, 1 = wild, 2 = trainer
+    pub fn read_battle_type(&self) -> u8 {
+        match self.game {
+            Game::Red | Game::Blue => self.rb(red_blue::IN_BATTLE),
+            Game::Yellow => self.rb(yellow::IN_BATTLE),
+            Game::Gold | Game::Silver => {
+                if self.rb(gold_silver::BATTLE_MODE) != 0 {
+                    self.rb(gold_silver::BATTLE_TYPE)
+                } else {
+                    0
+                }
+            }
+            Game::Crystal => {
+                if self.rb(crystal::BATTLE_MODE) != 0 {
+                    self.rb(crystal::BATTLE_TYPE)
+                } else {
+                    0
+                }
+            }
+            Game::Unknown => 0,
+        }
+    }
+
+    /// Read enemy trainer's party count (for trainer battles)
+    pub fn read_enemy_party_count(&self) -> u8 {
+        if !self.in_battle() {
+            return 0;
+        }
+
+        match self.game {
+            Game::Red | Game::Blue => self.rb(red_blue::ENEMY_PARTY_COUNT),
+            Game::Yellow => self.rb(yellow::ENEMY_PARTY_COUNT),
+            Game::Gold | Game::Silver => self.rb(gold_silver::ENEMY_PARTY_COUNT),
+            Game::Crystal => self.rb(crystal::ENEMY_PARTY_COUNT),
+            Game::Unknown => 0,
+        }
+    }
+
+    /// Read bag items (Gen 1)
+    /// Returns: Vec of (item_id, quantity) pairs
+    pub fn read_bag_gen1(&self) -> [(u8, u8); 20] {
+        let mut items = [(0u8, 0u8); 20];
+
+        let (count_addr, data_addr) = match self.game {
+            Game::Red | Game::Blue => (red_blue::BAG_ITEM_COUNT, red_blue::BAG_ITEM_DATA),
+            Game::Yellow => (yellow::BAG_ITEM_COUNT, yellow::BAG_ITEM_DATA),
+            _ => return items,
+        };
+
+        let count = self.rb(count_addr).min(20);
+        for i in 0..count as usize {
+            let item_id = self.rb(data_addr + (i as u16 * 2));
+            let quantity = self.rb(data_addr + (i as u16 * 2) + 1);
+            items[i] = (item_id, quantity);
+        }
+
+        items
+    }
+
+    /// Read items pocket (Gen 2)
+    /// Returns: Vec of (item_id, quantity) pairs
+    pub fn read_items_pocket_gen2(&self) -> [(u8, u8); 20] {
+        let mut items = [(0u8, 0u8); 20];
+
+        if !self.game.is_gen2() {
+            return items;
+        }
+
+        let (count_addr, data_addr) = match self.game {
+            Game::Gold | Game::Silver => (gold_silver::ITEMS_POCKET_COUNT, gold_silver::ITEMS_POCKET_DATA),
+            Game::Crystal => (crystal::ITEMS_POCKET_COUNT, crystal::ITEMS_POCKET_DATA),
+            _ => return items,
+        };
+
+        let count = self.rb(count_addr).min(20);
+        for i in 0..count as usize {
+            let item_id = self.rb(data_addr + (i as u16 * 2));
+            let quantity = self.rb(data_addr + (i as u16 * 2) + 1);
+            items[i] = (item_id, quantity);
+        }
+
+        items
     }
 }
 
