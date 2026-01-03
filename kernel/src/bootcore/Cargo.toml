@@ -1,0 +1,15 @@
+[package]
+name = "bootcore"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Shared abstractions for rustboot bootloader"
+
+[lib]
+name = "bootcore"
+
+[dependencies]
+
+[features]
+default = []

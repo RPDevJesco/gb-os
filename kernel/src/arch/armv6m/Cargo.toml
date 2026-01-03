@@ -1,0 +1,16 @@
+[package]
+name = "arch-armv6m"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "ARMv6-M architecture support for rustboot (RP2040)"
+
+[lib]
+name = "arch_armv6m"
+
+[dependencies]
+bootcore = { workspace = true }
+
+[features]
+default = []

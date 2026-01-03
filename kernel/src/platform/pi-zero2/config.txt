@@ -1,0 +1,31 @@
+# Raspberry Pi Zero 2 W boot configuration
+# Place this on the FAT32 boot partition along with kernel8.img
+
+# Force 64-bit mode (AArch64)
+arm_64bit=1
+
+# Disable Bluetooth to free up the PL011 UART (optional)
+# dtoverlay=disable-bt
+
+# Use Mini UART for serial console
+# (Mini UART uses GPIO14/15, same as default)
+enable_uart=1
+
+# Core frequency (affects Mini UART baud rate)
+# Mini UART clock is derived from VPU clock
+core_freq=250
+
+# Disable rainbow splash screen
+disable_splash=1
+
+# Boot kernel8.img (default for 64-bit)
+# kernel=kernel8.img
+
+# Optional: set kernel load address (default is 0x80000)
+# kernel_address=0x80000
+
+# Optional: disable overscan for HDMI
+disable_overscan=1
+
+# Optional: GPU memory split (minimum for headless)
+gpu_mem=16

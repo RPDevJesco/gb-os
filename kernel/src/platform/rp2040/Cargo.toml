@@ -1,0 +1,18 @@
+[package]
+name = "rustboot-rp2040"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "RP2040 bootloader"
+
+[[bin]]
+name = "bootloader"
+path = "src/main.rs"
+
+[dependencies]
+bootcore = { workspace = true }
+arch-armv6m = { workspace = true }
+
+[features]
+default = []

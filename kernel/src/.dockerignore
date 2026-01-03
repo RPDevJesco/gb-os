@@ -1,0 +1,23 @@
+# Build artifacts
+target/
+output/
+*.tar.gz
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Documentation that's not needed for build
+*.md
+!README.md

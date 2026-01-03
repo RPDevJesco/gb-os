@@ -1,0 +1,18 @@
+[package]
+name = "rustboot-pi-zero2"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Raspberry Pi Zero 2 W bootloader"
+
+[[bin]]
+name = "kernel8"
+path = "src/main.rs"
+
+[dependencies]
+bootcore = { workspace = true }
+arch-aarch64 = { workspace = true }
+
+[features]
+default = []

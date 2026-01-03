@@ -1,0 +1,33 @@
+[workspace]
+resolver = "2"
+members = [
+    "bootcore",
+    "arch/aarch64",
+    "arch/armv6m",
+    "platform/pi-zero2",
+    "platform/pi5",
+    "platform/kickpi-k2b",
+    "platform/rp2040",
+    "xtask",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+authors = ["Jesse"]
+
+[workspace.dependencies]
+bootcore = { path = "bootcore" }
+arch-aarch64 = { path = "arch/aarch64" }
+arch-armv6m = { path = "arch/armv6m" }
+
+[profile.release]
+opt-level = "z"      # Optimize for size
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+
+[profile.dev]
+panic = "abort"
