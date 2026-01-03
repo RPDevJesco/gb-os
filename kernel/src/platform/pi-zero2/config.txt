@@ -1,31 +1,44 @@
-# Raspberry Pi Zero 2 W boot configuration
-# Place this on the FAT32 boot partition along with kernel8.img
+# Raspberry Pi Zero 2 W Boot Configuration
+# ==========================================
+#
+# Memory Split:
+#   GPU:    32MB
+#   ARM:    480MB (Kernel 10MB + Heap 470MB)
 
 # Force 64-bit mode (AArch64)
 arm_64bit=1
 
-# Disable Bluetooth to free up the PL011 UART (optional)
-# dtoverlay=disable-bt
+# GPU memory: 32MB
+# This leaves 480MB for ARM cores
+gpu_mem=32
 
-# Use Mini UART for serial console
-# (Mini UART uses GPIO14/15, same as default)
+# Enable UART for debug output
+# Mini UART on GPIO14 (TX) / GPIO15 (RX)
 enable_uart=1
 
-# Core frequency (affects Mini UART baud rate)
-# Mini UART clock is derived from VPU clock
+# Core frequency - affects Mini UART baud rate
+# Mini UART clock = core_freq, so keep stable for reliable serial
 core_freq=250
 
-# Disable rainbow splash screen
+# Disable rainbow splash screen for faster boot
 disable_splash=1
 
-# Boot kernel8.img (default for 64-bit)
-# kernel=kernel8.img
+# Kernel filename (default for 64-bit)
+kernel=kernel8.img
 
-# Optional: set kernel load address (default is 0x80000)
+# Optional: Set kernel load address (default 0x80000 is fine)
 # kernel_address=0x80000
 
-# Optional: disable overscan for HDMI
+# Disable overscan (cleaner display output)
 disable_overscan=1
 
-# Optional: GPU memory split (minimum for headless)
-gpu_mem=16
+# Optional: Disable Bluetooth to free up PL011 UART
+# Uncomment if you want to use the full PL011 instead of Mini UART
+# dtoverlay=disable-bt
+
+# Optional: Turbo mode for max performance
+# arm_freq=1000
+# over_voltage=0
+
+# Optional: Disable unused features to save power
+# dtparam=audio=off

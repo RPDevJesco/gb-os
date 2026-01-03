@@ -2,9 +2,6 @@
 # rustboot Docker build script
 # Builds all platform targets and organizes outputs
 
-# Don't use set -e, we handle errors manually
-# set -e
-
 echo "========================================"
 echo " rustboot - Multi-Platform Bootloader"
 echo " Build Script"
@@ -17,9 +14,14 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-# Build directory
+# Build directory (root of project in container)
 BUILD_DIR="/build"
-OUTPUT_DIR="/build/output"
+
+# Source directory (where Cargo.toml and platform folders are)
+SRC_DIR="$BUILD_DIR/kernel/src"
+
+# Output directory
+OUTPUT_DIR="$BUILD_DIR/output"
 
 # Target definitions: name|rust_target|binary_name|output_name
 TARGETS=(
@@ -34,12 +36,12 @@ create_output_dirs() {
     echo -e "${YELLOW}Creating output directories...${NC}"
     rm -rf "$OUTPUT_DIR"
     mkdir -p "$OUTPUT_DIR"
-    
+
     for target_info in "${TARGETS[@]}"; do
         IFS='|' read -r name rust_target bin_name out_name <<< "$target_info"
         mkdir -p "$OUTPUT_DIR/$name"
     done
-    
+
     echo -e "${GREEN}Output directories created.${NC}"
     echo ""
 }
@@ -50,21 +52,23 @@ build_target() {
     local rust_target="$2"
     local bin_name="$3"
     local out_name="$4"
-    
+
     echo -e "${YELLOW}Building $name for $rust_target...${NC}"
-    
-    local platform_dir="$BUILD_DIR/platform/$name"
+
+    # Platform directory is under kernel/src/platform/
+    local platform_dir="$SRC_DIR/platform/$name"
     local linker_script="$platform_dir/linker.ld"
-    
+
     # Check linker script exists
     if [ ! -f "$linker_script" ]; then
         echo -e "${RED}  ERROR: Linker script not found: $linker_script${NC}"
         return 1
     fi
-    
-    # Build with cargo
+
+    # Build with cargo from the kernel/src directory (where Cargo.toml is)
     if ! RUSTFLAGS="-C link-arg=-T$linker_script" \
         cargo build \
+        --manifest-path "$SRC_DIR/Cargo.toml" \
         --release \
         --package "rustboot-$name" \
         --target "$rust_target" \
@@ -72,58 +76,38 @@ build_target() {
         echo -e "${RED}  ERROR: Cargo build failed for $name${NC}"
         return 1
     fi
-    
-    local elf_path="$BUILD_DIR/target/$rust_target/release/$bin_name"
-    local bin_path="$BUILD_DIR/target/$rust_target/release/${bin_name}.bin"
+
+    # Output paths - cargo puts output relative to manifest directory
+    local elf_path="$SRC_DIR/target/$rust_target/release/$bin_name"
+    local bin_path="$SRC_DIR/target/$rust_target/release/${bin_name}.bin"
     local target_output_dir="$OUTPUT_DIR/$name"
-    
+
     # Check if build succeeded
     if [ ! -f "$elf_path" ]; then
         echo -e "${RED}  ERROR: Build failed for $name - ELF not found at $elf_path${NC}"
         return 1
     fi
-    
+
     # Convert ELF to binary
     echo "  Converting ELF to binary..."
-    if ! rust-objcopy -O binary "$elf_path" "$bin_path"; then
+    if ! rust-objcopy -O binary "$elf_path" "$bin_path" 2>&1; then
         echo -e "${RED}  ERROR: objcopy failed for $name${NC}"
         return 1
     fi
-    
-    # Copy to output directory
+
+    # Copy outputs
     cp "$bin_path" "$target_output_dir/$out_name"
-    cp "$elf_path" "$target_output_dir/${bin_name}.elf"
-    
-    # Copy platform-specific files
+    cp "$elf_path" "$target_output_dir/"
+
+    # Copy config.txt if it exists
     if [ -f "$platform_dir/config.txt" ]; then
         cp "$platform_dir/config.txt" "$target_output_dir/"
     fi
-    
-    # Generate size info
+
+    # Get size info
     local size=$(stat -c%s "$target_output_dir/$out_name")
-    local size_kb=$(awk "BEGIN {printf \"%.2f\", $size / 1024}")
-    
-    echo -e "${GREEN}  Built: $out_name ($size bytes / ${size_kb} KB)${NC}"
-    
-    # Create info file
-    cat > "$target_output_dir/BUILD_INFO.txt" << BUILDEOF
-rustboot - $name
-================
+    echo -e "${GREEN}  SUCCESS: $out_name ($size bytes)${NC}"
 
-Binary: $out_name
-Size: $size bytes (${size_kb} KB)
-Target: $rust_target
-Built: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
-
-Files included:
-- $out_name       : Raw binary for flashing
-- ${bin_name}.elf : ELF with debug symbols
-BUILDEOF
-
-    if [ -f "$target_output_dir/config.txt" ]; then
-        echo "- config.txt      : Boot configuration" >> "$target_output_dir/BUILD_INFO.txt"
-    fi
-    
     return 0
 }
 
@@ -131,10 +115,9 @@ BUILDEOF
 build_all() {
     local success=0
     local failed=0
-    
+
     for target_info in "${TARGETS[@]}"; do
         IFS='|' read -r name rust_target bin_name out_name <<< "$target_info"
-        
         echo ""
         if build_target "$name" "$rust_target" "$bin_name" "$out_name"; then
             ((success++))
@@ -142,26 +125,29 @@ build_all() {
             ((failed++))
         fi
     done
-    
+
     echo ""
     echo "========================================"
     echo " Build Summary"
     echo "========================================"
-    echo -e "${GREEN}Successful: $success${NC}"
-    if [ $failed -gt 0 ]; then
-        echo -e "${RED}Failed: $failed${NC}"
-    fi
-    echo ""
+    echo -e "Successful: ${GREEN}$success${NC}"
+    echo -e "Failed: ${RED}$failed${NC}"
 }
 
-# Generate platform-specific README files
+# Generate README files for each platform
 generate_readmes() {
+    echo ""
     echo -e "${YELLOW}Generating platform documentation...${NC}"
-    
+
     # Pi Zero 2 W
     cat > "$OUTPUT_DIR/pi-zero2/README.txt" << 'EOF'
 Raspberry Pi Zero 2 W Bootloader
 ================================
+
+Files:
+  kernel8.img  - Bootloader binary (copy to SD card)
+  config.txt   - GPU configuration (copy to SD card)
+  kernel8      - ELF file (for debugging)
 
 Installation:
 1. Format SD card with FAT32 partition
@@ -170,9 +156,9 @@ Installation:
    Required: start.elf, fixup.dat
 3. Copy to SD card:
    - start.elf
-   - fixup.dat  
-   - config.txt (included)
-   - kernel8.img (included)
+   - fixup.dat
+   - config.txt
+   - kernel8.img
 
 UART Connection:
 - TX: GPIO14 (pin 8)
@@ -196,11 +182,6 @@ The Pi 5 uses different:
 - Boot firmware chain
 
 Full implementation requires hardware testing.
-
-Installation (when complete):
-1. Format SD card with FAT32 partition
-2. Get Pi 5 firmware files (start4.elf, fixup4.dat)
-3. Copy kernel8.img and config.txt to SD card
 EOF
 
     # KickPi K2B
@@ -217,14 +198,6 @@ The H618 boot chain:
 
 Flashing to SD card:
   sudo dd if=boot0.bin of=/dev/sdX bs=1024 seek=8
-
-FEL Mode (USB boot for development):
-  sunxi-fel spl boot0.bin
-
-Full implementation requires:
-- Clock (CCU) initialization
-- DRAM controller setup
-- UART0 initialization
 EOF
 
     # RP2040
@@ -241,13 +214,7 @@ The RP2040 boot chain:
 
 To flash:
 1. Hold BOOTSEL button while connecting USB
-2. Convert to UF2: elf2uf2-rs bootloader.elf bootloader.uf2
-3. Copy bootloader.uf2 to mounted drive
-
-Full implementation requires:
-- Stage2 flash timing for W25Q chips
-- Clock configuration (XOSC, PLL)
-- Proper vector table setup
+2. Copy UF2 file to mounted drive
 EOF
 
     echo -e "${GREEN}Documentation generated.${NC}"
@@ -257,22 +224,20 @@ EOF
 create_archive() {
     echo ""
     echo -e "${YELLOW}Creating combined archive...${NC}"
-    
+
     cd "$OUTPUT_DIR"
     tar -czvf ../rustboot-binaries.tar.gz ./*
-    
+
     echo -e "${GREEN}Archive created: rustboot-binaries.tar.gz${NC}"
 }
 
 # Main
 main() {
-    cd "$BUILD_DIR"
-    
     create_output_dirs
     build_all
     generate_readmes
     create_archive
-    
+
     echo ""
     echo "========================================"
     echo " Build Complete!"
@@ -281,7 +246,7 @@ main() {
     echo "Output directory: $OUTPUT_DIR"
     echo ""
     echo "Contents:"
-    find "$OUTPUT_DIR" -type f -name "*.img" -o -name "*.bin" | sort | while read f; do
+    find "$OUTPUT_DIR" -type f \( -name "*.img" -o -name "*.bin" \) | sort | while read f; do
         size=$(stat -c%s "$f")
         echo "  $(basename $(dirname $f))/$(basename $f) - $size bytes"
     done

@@ -1,25 +1,4 @@
-# Build outputs
-/build/
-/output/
+/target
+.idea
+/output
 /roms
-*.img
-*.bin
-
-# Rust build artifacts
-/kernel/target/
-**/*.rs.bk
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# OS files
-.DS_Store
-Thumbs.db
-
-# Archives
-*.tar.gz
-*.zip

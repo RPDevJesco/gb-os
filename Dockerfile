@@ -40,7 +40,7 @@ WORKDIR /build
 # Copy source files
 COPY . /build/
 
-# Make build script executable
+# Make build script executable (script is in project root)
 RUN chmod +x /build/docker-build.sh
 
 # Default command runs the build

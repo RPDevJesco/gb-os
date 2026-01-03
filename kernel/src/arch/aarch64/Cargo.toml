@@ -13,5 +13,5 @@ name = "arch_aarch64"
 bootcore = { workspace = true }
 
 [features]
-default = ["default-entry"]
-default-entry = []  # Include the default _start entry point
+default = []
+default-entry = []  # Only include _start if this feature is enabled
