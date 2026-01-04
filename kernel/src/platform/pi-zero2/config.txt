@@ -1,96 +1,89 @@
-# Raspberry Pi Zero 2 W - GPi Case 2W (Bare Metal)
-# FIXED: Uses gpio= directive instead of dtoverlay for bare-metal compatibility
+# ============================================================================
+# GPi Case 2W - Official RetroFlag Config (Modified for Bare Metal)
+# ============================================================================
 #
-# The dtoverlay= directive requires Linux to process device tree.
-# For bare-metal, we use gpio= which is processed by the GPU firmware.
-
+# This matches the EXACT settings from the official RetroFlag patch
+#
+# SD Card Structure Required:
+#   /
+#   ├── kernel8.img       (your bare-metal kernel)
+#   ├── config.txt        (this file)
+#   ├── start.elf         (from this package or Pi firmware)
+#   ├── fixup.dat         (from this package or Pi firmware)
+#   └── overlays/
+#       └── dpi24.dtbo    (from this package or Pi firmware)
+#
 # ============================================================================
-# Boot Configuration
-# ============================================================================
 
-# Boot in 64-bit mode (AArch64)
+# 64-bit mode for Pi Zero 2 W
 arm_64bit=1
 
-# Use kernel8.img as the kernel
+# Our kernel
 kernel=kernel8.img
 
-# GPU memory allocation
+# GPU memory
 gpu_mem=64
 
+# Boot delay (helps with initialization)
+boot_delay=1
+
+# Disable splash
+disable_splash=1
+
 # ============================================================================
-# DPI Display Configuration - GPi Case 2W
+# DPI Display Configuration - EXACT RetroFlag Settings
 # ============================================================================
 
-# CRITICAL: Configure GPIO pins for DPI using firmware directive
-# This replaces dtoverlay=dpi24 or dtoverlay=dpi18
-# Format: gpio=<pins>=<function>,<pull>
-#   a2 = ALT2 (DPI function)
-#   np = no pull (floating)
-gpio=0-21=a2,np
-
-# Enable DPI LCD output
-enable_dpi_lcd=1
-display_default_lcd=1
-
-# DPI display timing group and mode
-# Group 2 = DMT (Display Monitor Timings)
-# Mode 87 = Custom timing mode (use hdmi_timings)
-dpi_group=2
-dpi_mode=87
-
-# DPI Output Format: 0x6016
-#   Bits [3:0] = 6: RGB666 padded mode
-#   Bit [4]    = 1: Output enable mode
-#   Bit [12]   = 1: BGR order
-dpi_output_format=0x6016
-
-# Custom display timing for GPi Case 2W
-# Format: h_active h_sync_pol h_fp h_sync h_bp v_active v_sync_pol v_fp v_sync v_bp 0 0 0 fps 0 pixel_clock interlace
-#
-# GPi Case 2W: 240x320 panel rotated to 320x240
-hdmi_timings=240 1 38 10 20 320 1 20 4 4 0 0 0 60 0 6400000 1
-
-# Display rotation (90 degrees)
+# Rotation 90 degrees
 display_rotate=1
 
-# Framebuffer dimensions (after rotation)
-framebuffer_width=320
-framebuffer_height=240
+# DPI24 overlay - THIS IS THE KEY!
+# This configures GPIO 0-27 for DPI function
+# You MUST have overlays/dpi24.dtbo on your SD card!
+dtoverlay=dpi24
 
-# ============================================================================
-# HDMI Disable
-# ============================================================================
-
-# Disable HDMI since we're using DPI
-hdmi_ignore_hotplug=1
-
-# ============================================================================
-# Overscan (disabled)
-# ============================================================================
-
-disable_overscan=1
+# Overscan
 overscan_left=0
 overscan_right=0
 overscan_top=0
 overscan_bottom=0
 
+# Framebuffer dimensions (post-rotation)
+framebuffer_width=320
+framebuffer_height=240
+
+# Enable DPI LCD
+enable_dpi_lcd=1
+display_default_lcd=1
+
+# DPI timing group/mode
+dpi_group=2
+dpi_mode=87
+
+# DPI Output Format: 0x6016 (RGB666 padded, output enable, BGR order)
+dpi_output_format=0x6016
+
+# Display timing
+hdmi_timings=240 1 38 10 20 320 1 20 4 4 0 0 0 60 0 6400000 1
+
 # ============================================================================
-# Disable Conflicting Interfaces
+# Disable HDMI
 # ============================================================================
 
-# I2C and SPI conflict with DPI pins - disable via dtparam
-# Note: dtparam is processed by firmware, unlike dtoverlay
-dtparam=i2c_arm=off
-dtparam=spi=off
+hdmi_ignore_hotplug=1
+
+# ============================================================================
+# Disable conflicting interfaces
+# ============================================================================
+
+# Audio uses PWM pins that conflict with DPI
 dtparam=audio=off
 
-# ============================================================================
-# Debug Options (uncomment if needed)
-# ============================================================================
+# I2C uses GPIO 2-3 which are needed for DPI VSYNC/HSYNC
+dtparam=i2c_arm=off
 
-# Enable UART for debugging (uses GPIO 14/15 which conflicts with DPI green)
-# Only enable if you need serial debug AND can sacrifice those pins
-# enable_uart=1
+# SPI uses GPIO 7-11 which are needed for DPI blue/green
+dtparam=spi=off
 
-# Boot delay for debugging
-# boot_delay=3
+# UART uses GPIO 14-15 which are needed for DPI green
+enable_uart=0

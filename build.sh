@@ -1,13 +1,8 @@
 #!/bin/bash
-# rustboot Linux/macOS Build Script
-# Builds all platform bootloaders using Docker
+# Build script for GPi Case 2W kernel
+# This builds a standalone kernel8.img for bare-metal Pi Zero 2 W
 
 set -e
-
-echo "========================================"
-echo " rustboot - Docker Build"
-echo "========================================"
-echo ""
 
 # Colors
 RED='\033[0;31m'
@@ -15,76 +10,94 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
-IMAGE_NAME="rustboot-builder"
-CONTAINER_NAME="rustboot-build-container"
+echo -e "${GREEN}=== GPi Case 2W Kernel Build ===${NC}"
+echo ""
 
-# Check if Docker is available
-if ! command -v docker &> /dev/null; then
-    echo -e "${RED}ERROR: Docker is not installed${NC}"
-    echo "Please install Docker from https://docker.com"
-    exit 1
+# Check for required tools
+command -v rustc >/dev/null 2>&1 || { echo -e "${RED}Error: rustc not found${NC}"; exit 1; }
+command -v cargo >/dev/null 2>&1 || { echo -e "${RED}Error: cargo not found${NC}"; exit 1; }
+
+# Ensure we have the right target
+echo "Checking Rust target..."
+rustup target add aarch64-unknown-none 2>/dev/null || true
+
+# Create a minimal Cargo project if needed
+if [ ! -f "Cargo.toml" ]; then
+    echo "Creating Cargo.toml..."
+    cat > Cargo.toml << 'EOF'
+[package]
+name = "gpi-kernel"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "kernel8"
+path = "main.rs"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+
+[profile.dev]
+panic = "abort"
+EOF
 fi
 
-# Check if Docker daemon is running
-if ! docker info &> /dev/null; then
-    echo -e "${RED}ERROR: Docker daemon is not running${NC}"
-    echo "Please start Docker and try again"
-    exit 1
-fi
+# Create output directory
+mkdir -p output
 
-echo -e "${YELLOW}[1/4] Building Docker image...${NC}"
-echo "This may take a few minutes on first run..."
+# Build
+echo ""
+echo "Compiling kernel..."
+RUSTFLAGS="-C link-arg=-Tlinker.ld" \
+cargo build --release --target aarch64-unknown-none
+
+# Convert ELF to binary
+echo "Converting to binary..."
+rust-objcopy -O binary target/aarch64-unknown-none/release/kernel8 output/kernel8.img
+
+# Copy config
+echo "Copying config.txt..."
+cp config.txt output/
+
+# Show results
+echo ""
+echo -e "${GREEN}=== Build Complete ===${NC}"
+echo ""
+ls -la output/
 echo ""
 
-docker build -t "$IMAGE_NAME" .
-
-echo ""
-echo -e "${YELLOW}[2/4] Running build container...${NC}"
-echo ""
-
-# Remove any existing container with same name
-docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
-
-# Run the build
-docker run --name "$CONTAINER_NAME" "$IMAGE_NAME"
-
-echo ""
-echo -e "${YELLOW}[3/4] Copying output files...${NC}"
+SIZE=$(stat -c%s output/kernel8.img 2>/dev/null || stat -f%z output/kernel8.img 2>/dev/null)
+SIZE_KB=$((SIZE / 1024))
+echo "Kernel size: ${SIZE_KB} KB ($SIZE bytes)"
 echo ""
 
-# Remove old output directory
-rm -rf output
-
-# Copy output from container
-docker cp "$CONTAINER_NAME":/build/output ./output
-docker cp "$CONTAINER_NAME":/build/rustboot-binaries.tar.gz ./
-
+echo -e "${GREEN}=== SD Card Setup ===${NC}"
 echo ""
-echo -e "${YELLOW}[4/4] Cleaning up...${NC}"
+echo "1. Format SD card as FAT32"
 echo ""
-
-docker rm "$CONTAINER_NAME" 2>/dev/null || true
-
+echo "2. Download Raspberry Pi firmware from:"
+echo "   https://github.com/raspberrypi/firmware/tree/master/boot"
+echo "   Required files: start.elf, fixup.dat"
 echo ""
-echo "========================================"
-echo -e "${GREEN} Build Complete!${NC}"
-echo "========================================"
+echo "3. Copy to SD card root:"
+echo "   - output/kernel8.img"
+echo "   - output/config.txt"
+echo "   - start.elf (from Pi firmware)"
+echo "   - fixup.dat (from Pi firmware)"
 echo ""
-echo "Output files are in the 'output' directory:"
+echo -e "${YELLOW}LED Blink Pattern:${NC}"
+echo "  1 blink  = Kernel started"
+echo "  2 blinks = GPIO configured for DPI"
+echo "  3 blinks = Framebuffer initialized"
+echo "  4 blinks = Test pattern drawn"
+echo "  LED ON   = Running normally"
 echo ""
-
-# List output files
-for dir in output/*/; do
-    platform=$(basename "$dir")
-    echo "  $platform/"
-    for f in "$dir"*.img "$dir"*.bin; do
-        if [ -f "$f" ]; then
-            size=$(stat -f%z "$f" 2>/dev/null || stat -c%s "$f" 2>/dev/null)
-            echo "    $(basename "$f") - $size bytes"
-        fi
-    done
-done
-
+echo "  Rapid blinks then N = Error code N"
+echo "    Error 1 = GPIO configuration failed"
+echo "    Error 2 = Framebuffer init failed"
 echo ""
-echo "Combined archive: rustboot-binaries.tar.gz"
-echo ""
+echo -e "${GREEN}Done!${NC}"
