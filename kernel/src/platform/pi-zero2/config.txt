@@ -1,21 +1,96 @@
-# Raspberry Pi Zero 2 W Configuration
-# Required for bare-metal kernel
+# Raspberry Pi Zero 2 W - GPi Case 2W (Bare Metal)
+# FIXED: Uses gpio= directive instead of dtoverlay for bare-metal compatibility
+#
+# The dtoverlay= directive requires Linux to process device tree.
+# For bare-metal, we use gpio= which is processed by the GPU firmware.
+
+# ============================================================================
+# Boot Configuration
+# ============================================================================
 
 # Boot in 64-bit mode (AArch64)
 arm_64bit=1
 
+# Use kernel8.img as the kernel
+kernel=kernel8.img
+
 # GPU memory allocation
 gpu_mem=64
 
-# Enable HDMI output even without connected display
-hdmi_force_hotplug=1
+# ============================================================================
+# DPI Display Configuration - GPi Case 2W
+# ============================================================================
 
-# Set HDMI mode (1280x720 @ 60Hz)
-hdmi_group=1
-hdmi_mode=4
+# CRITICAL: Configure GPIO pins for DPI using firmware directive
+# This replaces dtoverlay=dpi24 or dtoverlay=dpi18
+# Format: gpio=<pins>=<function>,<pull>
+#   a2 = ALT2 (DPI function)
+#   np = no pull (floating)
+gpio=0-21=a2,np
 
-# Disable overscan
+# Enable DPI LCD output
+enable_dpi_lcd=1
+display_default_lcd=1
+
+# DPI display timing group and mode
+# Group 2 = DMT (Display Monitor Timings)
+# Mode 87 = Custom timing mode (use hdmi_timings)
+dpi_group=2
+dpi_mode=87
+
+# DPI Output Format: 0x6016
+#   Bits [3:0] = 6: RGB666 padded mode
+#   Bit [4]    = 1: Output enable mode
+#   Bit [12]   = 1: BGR order
+dpi_output_format=0x6016
+
+# Custom display timing for GPi Case 2W
+# Format: h_active h_sync_pol h_fp h_sync h_bp v_active v_sync_pol v_fp v_sync v_bp 0 0 0 fps 0 pixel_clock interlace
+#
+# GPi Case 2W: 240x320 panel rotated to 320x240
+hdmi_timings=240 1 38 10 20 320 1 20 4 4 0 0 0 60 0 6400000 1
+
+# Display rotation (90 degrees)
+display_rotate=1
+
+# Framebuffer dimensions (after rotation)
+framebuffer_width=320
+framebuffer_height=240
+
+# ============================================================================
+# HDMI Disable
+# ============================================================================
+
+# Disable HDMI since we're using DPI
+hdmi_ignore_hotplug=1
+
+# ============================================================================
+# Overscan (disabled)
+# ============================================================================
+
 disable_overscan=1
+overscan_left=0
+overscan_right=0
+overscan_top=0
+overscan_bottom=0
 
-# Use kernel8.img as the kernel
-kernel=kernel8.img
+# ============================================================================
+# Disable Conflicting Interfaces
+# ============================================================================
+
+# I2C and SPI conflict with DPI pins - disable via dtparam
+# Note: dtparam is processed by firmware, unlike dtoverlay
+dtparam=i2c_arm=off
+dtparam=spi=off
+dtparam=audio=off
+
+# ============================================================================
+# Debug Options (uncomment if needed)
+# ============================================================================
+
+# Enable UART for debugging (uses GPIO 14/15 which conflicts with DPI green)
+# Only enable if you need serial debug AND can sacrifice those pins
+# enable_uart=1
+
+# Boot delay for debugging
+# boot_delay=3
