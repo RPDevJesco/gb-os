@@ -1,89 +1,38 @@
-# ============================================================================
-# GPi Case 2W - Official RetroFlag Config (Modified for Bare Metal)
-# ============================================================================
+# GPi Case 2W - Native 240x320 (Software Rotation)
 #
-# This matches the EXACT settings from the official RetroFlag patch
-#
-# SD Card Structure Required:
-#   /
-#   ├── kernel8.img       (your bare-metal kernel)
-#   ├── config.txt        (this file)
-#   ├── start.elf         (from this package or Pi firmware)
-#   ├── fixup.dat         (from this package or Pi firmware)
-#   └── overlays/
-#       └── dpi24.dtbo    (from this package or Pi firmware)
-#
-# ============================================================================
+# NO display_rotate - kernel handles rotation in software
+# Request native 240x320 portrait dimensions
 
-# 64-bit mode for Pi Zero 2 W
 arm_64bit=1
-
-# Our kernel
 kernel=kernel8.img
-
-# GPU memory
 gpu_mem=64
-
-# Boot delay (helps with initialization)
 boot_delay=1
-
-# Disable splash
 disable_splash=1
 
-# ============================================================================
-# DPI Display Configuration - EXACT RetroFlag Settings
-# ============================================================================
-
-# Rotation 90 degrees
-display_rotate=1
-
-# DPI24 overlay - THIS IS THE KEY!
-# This configures GPIO 0-27 for DPI function
-# You MUST have overlays/dpi24.dtbo on your SD card!
+# DPI Display
 dtoverlay=dpi24
+enable_dpi_lcd=1
+display_default_lcd=1
+dpi_group=2
+dpi_mode=87
+dpi_output_format=0x6016
 
-# Overscan
+# Native dimensions - NO rotation!
+# display_rotate=1  # REMOVED - we rotate in software
+framebuffer_width=240
+framebuffer_height=320
+
+# Panel timing (native 240x320)
+hdmi_timings=240 1 38 10 20 320 1 20 4 4 0 0 0 60 0 6400000 1
+
 overscan_left=0
 overscan_right=0
 overscan_top=0
 overscan_bottom=0
 
-# Framebuffer dimensions (post-rotation)
-framebuffer_width=320
-framebuffer_height=240
-
-# Enable DPI LCD
-enable_dpi_lcd=1
-display_default_lcd=1
-
-# DPI timing group/mode
-dpi_group=2
-dpi_mode=87
-
-# DPI Output Format: 0x6016 (RGB666 padded, output enable, BGR order)
-dpi_output_format=0x6016
-
-# Display timing
-hdmi_timings=240 1 38 10 20 320 1 20 4 4 0 0 0 60 0 6400000 1
-
-# ============================================================================
-# Disable HDMI
-# ============================================================================
-
-hdmi_ignore_hotplug=1
-
-# ============================================================================
 # Disable conflicting interfaces
-# ============================================================================
-
-# Audio uses PWM pins that conflict with DPI
+hdmi_ignore_hotplug=1
 dtparam=audio=off
-
-# I2C uses GPIO 2-3 which are needed for DPI VSYNC/HSYNC
 dtparam=i2c_arm=off
-
-# SPI uses GPIO 7-11 which are needed for DPI blue/green
 dtparam=spi=off
-
-# UART uses GPIO 14-15 which are needed for DPI green
 enable_uart=0
