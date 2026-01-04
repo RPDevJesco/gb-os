@@ -1,38 +1,39 @@
-# GPi Case 2W - Native 240x320 (Software Rotation)
-#
-# NO display_rotate - kernel handles rotation in software
-# Request native 240x320 portrait dimensions
+# GPi Case 2W - Official timings from Batocera/RetroFlag
+# 640x480 IPS panel
 
-arm_64bit=1
-kernel=kernel8.img
-gpu_mem=64
-boot_delay=1
-disable_splash=1
+disable_overscan=1
 
-# DPI Display
+# DPI overlay - use the GPi Case specific one or standard dpi24
 dtoverlay=dpi24
-enable_dpi_lcd=1
-display_default_lcd=1
-dpi_group=2
-dpi_mode=87
-dpi_output_format=0x6016
 
-# Native dimensions - NO rotation!
-# display_rotate=1  # REMOVED - we rotate in software
-framebuffer_width=240
-framebuffer_height=320
-
-# Panel timing (native 240x320)
-hdmi_timings=240 1 38 10 20 320 1 20 4 4 0 0 0 60 0 6400000 1
+# Display rotation (0 = normal landscape)
+display_rotate=0
 
 overscan_left=0
 overscan_right=0
 overscan_top=0
 overscan_bottom=0
 
-# Disable conflicting interfaces
-hdmi_ignore_hotplug=1
-dtparam=audio=off
-dtparam=i2c_arm=off
-dtparam=spi=off
-enable_uart=0
+# Framebuffer at native resolution
+framebuffer_width=640
+framebuffer_height=480
+
+# Enable DPI LCD
+enable_dpi_lcd=1
+display_default_lcd=1
+
+# DPI mode settings
+dpi_group=2
+dpi_mode=87
+dpi_output_format=0x00016
+
+# GPi Case 2W specific timings (from Batocera config)
+# 640x480 @ 60Hz, 19.2MHz pixel clock
+hdmi_timings=640 0 1 1 20 480 0 1 1 2 0 0 0 60 0 19200000 1
+
+# 32-bit framebuffer
+framebuffer_depth=32
+
+# Boot kernel
+kernel=kernel8.img
+arm_64bit=1
