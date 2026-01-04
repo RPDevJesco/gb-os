@@ -145,7 +145,7 @@ Raspberry Pi Zero 2 W Bootloader
 ================================
 
 Files:
-  kernel8.img  - Bootloader binary (copy to SD card)
+  kernel8.img  - Kernel binary (copy to SD card)
   config.txt   - GPU configuration (copy to SD card)
   kernel8      - ELF file (for debugging)
 
@@ -160,13 +160,8 @@ Installation:
    - config.txt
    - kernel8.img
 
-UART Connection:
-- TX: GPIO14 (pin 8)
-- RX: GPIO15 (pin 10)
-- GND: pin 6
-- Baud: 115200, 8N1
-
-The bootloader will print system info and enter echo mode.
+The kernel will display a green border and title box on HDMI.
+The ACT LED will blink patterns during boot.
 EOF
 
     # Pi 5
@@ -191,13 +186,7 @@ KickPi K2B (Allwinner H618) Bootloader
 
 NOTE: This is a placeholder build. DRAM initialization required.
 
-The H618 boot chain:
-1. BROM loads boot0 from SD offset 8KB
-2. boot0 initializes DRAM
-3. boot0 loads U-Boot or payload to DRAM
-
-Flashing to SD card:
-  sudo dd if=boot0.bin of=/dev/sdX bs=1024 seek=8
+The H618 boot chain requires complex initialization.
 EOF
 
     # RP2040
@@ -205,16 +194,9 @@ EOF
 RP2040 Bootloader
 =================
 
-NOTE: This is a placeholder build. Stage2 flash init required.
+NOTE: This is a placeholder build.
 
-The RP2040 boot chain:
-1. Boot ROM loads 256-byte stage2 from flash
-2. Stage2 configures XIP (execute-in-place)
-3. Main application runs from flash
-
-To flash:
-1. Hold BOOTSEL button while connecting USB
-2. Copy UF2 file to mounted drive
+The RP2040 requires stage2 flash configuration.
 EOF
 
     echo -e "${GREEN}Documentation generated.${NC}"
@@ -224,33 +206,27 @@ EOF
 create_archive() {
     echo ""
     echo -e "${YELLOW}Creating combined archive...${NC}"
-
-    cd "$OUTPUT_DIR"
-    tar -czvf ../rustboot-binaries.tar.gz ./*
-
+    
+    cd "$BUILD_DIR"
+    tar -czvf rustboot-binaries.tar.gz -C "$OUTPUT_DIR" .
+    
     echo -e "${GREEN}Archive created: rustboot-binaries.tar.gz${NC}"
 }
 
-# Main
+# Main execution
 main() {
     create_output_dirs
     build_all
     generate_readmes
     create_archive
-
+    
     echo ""
     echo "========================================"
-    echo " Build Complete!"
+    echo -e "${GREEN} All Done!${NC}"
     echo "========================================"
     echo ""
-    echo "Output directory: $OUTPUT_DIR"
-    echo ""
-    echo "Contents:"
-    find "$OUTPUT_DIR" -type f \( -name "*.img" -o -name "*.bin" \) | sort | while read f; do
-        size=$(stat -c%s "$f")
-        echo "  $(basename $(dirname $f))/$(basename $f) - $size bytes"
-    done
-    echo ""
+    echo "Output files in: $OUTPUT_DIR"
+    echo "Combined archive: $BUILD_DIR/rustboot-binaries.tar.gz"
 }
 
-main "$@"
+main

@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "KickPi K2B (Allwinner H618) bootloader"
+description = "KickPi K2B bootloader"
 
 [[bin]]
 name = "boot0"
@@ -12,8 +12,4 @@ path = "src/main.rs"
 
 [dependencies]
 bootcore = { workspace = true }
-# Use direct path and disable default-entry since we have our own eGON header entry point
-arch-aarch64 = { path = "../../arch/aarch64", default-features = false }
-
-[features]
-default = []
+arch-aarch64 = { workspace = true }

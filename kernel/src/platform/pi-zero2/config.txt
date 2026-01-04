@@ -1,44 +1,21 @@
-# Raspberry Pi Zero 2 W Boot Configuration
-# ==========================================
-#
-# Memory Split:
-#   GPU:    32MB
-#   ARM:    480MB (Kernel 10MB + Heap 470MB)
+# Raspberry Pi Zero 2 W Configuration
+# Required for bare-metal kernel
 
-# Force 64-bit mode (AArch64)
+# Boot in 64-bit mode (AArch64)
 arm_64bit=1
 
-# GPU memory: 32MB
-# This leaves 480MB for ARM cores
-gpu_mem=32
+# GPU memory allocation
+gpu_mem=64
 
-# Enable UART for debug output
-# Mini UART on GPIO14 (TX) / GPIO15 (RX)
-enable_uart=1
+# Enable HDMI output even without connected display
+hdmi_force_hotplug=1
 
-# Core frequency - affects Mini UART baud rate
-# Mini UART clock = core_freq, so keep stable for reliable serial
-core_freq=250
+# Set HDMI mode (1280x720 @ 60Hz)
+hdmi_group=1
+hdmi_mode=4
 
-# Disable rainbow splash screen for faster boot
-disable_splash=1
-
-# Kernel filename (default for 64-bit)
-kernel=kernel8.img
-
-# Optional: Set kernel load address (default 0x80000 is fine)
-# kernel_address=0x80000
-
-# Disable overscan (cleaner display output)
+# Disable overscan
 disable_overscan=1
 
-# Optional: Disable Bluetooth to free up PL011 UART
-# Uncomment if you want to use the full PL011 instead of Mini UART
-# dtoverlay=disable-bt
-
-# Optional: Turbo mode for max performance
-# arm_freq=1000
-# over_voltage=0
-
-# Optional: Disable unused features to save power
-# dtparam=audio=off
+# Use kernel8.img as the kernel
+kernel=kernel8.img

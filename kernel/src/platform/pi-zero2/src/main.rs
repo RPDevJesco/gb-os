@@ -1,4 +1,4 @@
-//! Raspberry Pi Zero 2 W Bootloader
+//! Raspberry Pi Zero 2 W Bare-Metal Kernel
 //!
 //! Entry point for the Pi Zero 2 W (BCM2710, Cortex-A53).
 //! The GPU firmware loads this as kernel8.img at 0x80000.
@@ -6,278 +6,423 @@
 #![no_std]
 #![no_main]
 
-mod gpio;
-mod uart;
-mod mmio;
-mod memory_map;
-mod entry;
-mod mailbox;
+use core::arch::global_asm;
+use core::ptr::{read_volatile, write_volatile};
 
-use bootcore::Serial;
-use core::fmt::Write;
+// ============================================================================
+// Boot Assembly (must be first in binary - .text.boot section)
+// ============================================================================
 
-/// Pi Zero 2 W peripheral base address.
-pub const PERIPHERAL_BASE: usize = memory_map::PERIPHERAL_BASE;
+global_asm!(
+    r#"
+.section .text.boot
 
-/// Main boot entry point, called from assembly after stack setup.
-#[unsafe(no_mangle)]
-pub extern "C" fn boot_main(_core_id: u64) -> ! {
-    // Initialize UART for debug output
-    let mut uart = uart::MiniUart::new();
-    uart.init(115200).expect("UART init failed");
+.global _start
 
-    // Print banner
-    uart.write_line("");
-    uart.write_line("=====================================");
-    uart.write_line(" rustboot - Pi Zero 2 W");
-    uart.write_line("=====================================");
-    uart.write_line("");
+_start:
+    // Read core ID from MPIDR_EL1
+    mrs     x0, mpidr_el1
+    and     x0, x0, #0xFF
+    
+    // If not core 0, park it
+    cbz     x0, core0_boot
+    
+park_loop:
+    wfe                         // Wait for event (low power)
+    b       park_loop
 
-    // Print CPU info
-    let el = arch_aarch64::current_el();
-    let core = arch_aarch64::core_id();
-    let midr = arch_aarch64::cpu::Midr::read();
+core0_boot:
+    // Set up stack pointer (grows down from 0x80000)
+    ldr     x0, =_start
+    mov     sp, x0
+    
+    // Clear BSS section
+    ldr     x0, =__bss_start
+    ldr     x1, =__bss_size
+    cbz     x1, bss_done
+    
+bss_clear:
+    str     xzr, [x0], #8
+    subs    x1, x1, #1
+    bne     bss_clear
+    
+bss_done:
+    // Jump to Rust kernel_main
+    bl      kernel_main
+    
+    // If kernel_main returns, halt
+halt:
+    wfe
+    b       halt
+"#
+);
 
-    let _ = writeln!(
-        bootcore::fmt::SerialWriter(&mut uart),
-        "Exception Level: EL{}",
-        el
-    );
-    let _ = writeln!(
-        bootcore::fmt::SerialWriter(&mut uart),
-        "Core ID: {}",
-        core
-    );
+// ============================================================================
+// Hardware Constants (BCM2710 - Pi Zero 2 W)
+// ============================================================================
 
-    if midr.is_cortex_a53() {
-        uart.write_line("CPU: ARM Cortex-A53");
+/// BCM2710 Peripheral Base Address
+const PERIPHERAL_BASE: usize = 0x3F000000;
+
+/// GPIO Registers
+const GPIO_BASE: usize = PERIPHERAL_BASE + 0x200000;
+const GPFSEL2: usize = GPIO_BASE + 0x08;
+const GPSET0: usize = GPIO_BASE + 0x1C;
+const GPCLR0: usize = GPIO_BASE + 0x28;
+
+/// Mailbox Registers
+const MAILBOX_BASE: usize = PERIPHERAL_BASE + 0xB880;
+const MAILBOX_READ: usize = MAILBOX_BASE + 0x00;
+const MAILBOX_STATUS: usize = MAILBOX_BASE + 0x18;
+const MAILBOX_WRITE: usize = MAILBOX_BASE + 0x20;
+
+const MAILBOX_FULL: u32 = 0x80000000;
+const MAILBOX_EMPTY: u32 = 0x40000000;
+const MAILBOX_CH_PROP: u8 = 8;
+
+/// Framebuffer Tags
+const TAG_FB_SET_PHYS_WH: u32 = 0x00048003;
+const TAG_FB_SET_VIRT_WH: u32 = 0x00048004;
+const TAG_FB_SET_VIRT_OFF: u32 = 0x00048009;
+const TAG_FB_SET_DEPTH: u32 = 0x00048005;
+const TAG_FB_ALLOC: u32 = 0x00040001;
+const TAG_FB_GET_PITCH: u32 = 0x00040008;
+const TAG_END: u32 = 0x00000000;
+
+/// ACT LED is on GPIO 29 (active LOW on Pi Zero 2 W)
+const ACT_LED_PIN: u32 = 29;
+
+// ============================================================================
+// MMIO Helpers
+// ============================================================================
+
+#[inline(always)]
+fn mmio_read(addr: usize) -> u32 {
+    unsafe { read_volatile(addr as *const u32) }
+}
+
+#[inline(always)]
+fn mmio_write(addr: usize, value: u32) {
+    unsafe { write_volatile(addr as *mut u32, value) }
+}
+
+#[inline(always)]
+fn delay(count: u32) {
+    for _ in 0..count {
+        core::hint::spin_loop();
     }
+}
 
-    uart.write_line("");
+// ============================================================================
+// LED Control
+// ============================================================================
 
-    // ========================================================================
-    // Query memory via mailbox
-    // ========================================================================
-    uart.write_line("Querying VideoCore mailbox...");
+fn led_init() {
+    // GPIO 29 is in GPFSEL2 (pins 20-29), bits 27-29
+    let sel = mmio_read(GPFSEL2);
+    let sel = (sel & !(7 << 27)) | (1 << 27); // Set as output (001)
+    mmio_write(GPFSEL2, sel);
+}
 
-    let mbox = mailbox::get_mailbox();
+fn led_on() {
+    // Active LOW - clear to turn on
+    mmio_write(GPCLR0, 1 << ACT_LED_PIN);
+}
 
-    // Get ARM memory
-    match mbox.get_arm_memory() {
-        Ok((base, size)) => {
-            let _ = writeln!(
-                bootcore::fmt::SerialWriter(&mut uart),
-                "  ARM Memory: 0x{:08X} - 0x{:08X} ({} MB)",
-                base,
-                base + size,
-                size / 1024 / 1024
-            );
-        }
-        Err(e) => {
-            let _ = writeln!(
-                bootcore::fmt::SerialWriter(&mut uart),
-                "  ARM Memory: ERROR {:?}",
-                e
-            );
-        }
+fn led_off() {
+    // Active LOW - set to turn off
+    mmio_write(GPSET0, 1 << ACT_LED_PIN);
+}
+
+fn led_blink(count: u32, delay_cycles: u32) {
+    for _ in 0..count {
+        led_on();
+        delay(delay_cycles);
+        led_off();
+        delay(delay_cycles);
     }
+}
 
-    // Get VC memory
-    match mbox.get_vc_memory() {
-        Ok((base, size)) => {
-            let _ = writeln!(
-                bootcore::fmt::SerialWriter(&mut uart),
-                "  VC Memory:  0x{:08X} - 0x{:08X} ({} MB)",
-                base,
-                base + size,
-                size / 1024 / 1024
-            );
+// ============================================================================
+// Mailbox
+// ============================================================================
+
+/// Mailbox buffer - 16-byte aligned for DMA
+#[repr(C, align(16))]
+struct MailboxBuffer {
+    data: [u32; 36],
+}
+
+static mut MAILBOX_BUFFER: MailboxBuffer = MailboxBuffer { data: [0; 36] };
+
+fn mailbox_call(channel: u8) -> bool {
+    unsafe {
+        let addr = core::ptr::addr_of!(MAILBOX_BUFFER) as u32;
+        
+        // Wait until mailbox is not full
+        while (mmio_read(MAILBOX_STATUS) & MAILBOX_FULL) != 0 {
+            core::hint::spin_loop();
         }
-        Err(e) => {
-            let _ = writeln!(
-                bootcore::fmt::SerialWriter(&mut uart),
-                "  VC Memory: ERROR {:?}",
-                e
-            );
-        }
-    }
-
-    // Get board revision
-    match mbox.get_board_revision() {
-        Ok(rev) => {
-            let _ = writeln!(
-                bootcore::fmt::SerialWriter(&mut uart),
-                "  Board Rev:  0x{:08X}",
-                rev
-            );
-        }
-        Err(_) => {}
-    }
-
-    // Get clock rates
-    uart.write_line("");
-    uart.write_line("Clock rates:");
-
-    for (name, id) in &[
-        ("ARM", mailbox::clock::ARM),
-        ("Core", mailbox::clock::CORE),
-        ("EMMC", mailbox::clock::EMMC),
-        ("UART", mailbox::clock::UART),
-    ] {
-        match mbox.get_clock_rate(*id) {
-            Ok(rate) => {
-                let _ = writeln!(
-                    bootcore::fmt::SerialWriter(&mut uart),
-                    "  {:6}: {} MHz",
-                    name,
-                    rate / 1_000_000
-                );
+        
+        // Write address + channel
+        mmio_write(MAILBOX_WRITE, (addr & 0xFFFFFFF0) | (channel as u32));
+        
+        // Wait for response
+        loop {
+            while (mmio_read(MAILBOX_STATUS) & MAILBOX_EMPTY) != 0 {
+                core::hint::spin_loop();
             }
-            Err(_) => {}
+            
+            let data = mmio_read(MAILBOX_READ);
+            if (data & 0xF) == channel as u32 {
+                // Check response code
+                return MAILBOX_BUFFER.data[1] == 0x80000000;
+            }
         }
     }
+}
 
-    // ========================================================================
-    // Initialize framebuffer (optional - uncomment to test)
-    // ========================================================================
-    uart.write_line("");
-    uart.write_line("Initializing framebuffer...");
+// ============================================================================
+// Framebuffer
+// ============================================================================
 
-    match mbox.init_framebuffer(640, 480, 32) {
-        Ok(fb) => {
-            let _ = writeln!(
-                bootcore::fmt::SerialWriter(&mut uart),
-                "  Resolution: {}x{}",
-                fb.width,
-                fb.height
-            );
-            let _ = writeln!(
-                bootcore::fmt::SerialWriter(&mut uart),
-                "  Depth:      {} bpp",
-                fb.depth
-            );
-            let _ = writeln!(
-                bootcore::fmt::SerialWriter(&mut uart),
-                "  Pitch:      {} bytes",
-                fb.pitch
-            );
-            let _ = writeln!(
-                bootcore::fmt::SerialWriter(&mut uart),
-                "  Address:    0x{:08X}",
-                fb.address
-            );
-            let _ = writeln!(
-                bootcore::fmt::SerialWriter(&mut uart),
-                "  Size:       {} KB",
-                fb.size / 1024
-            );
+struct Framebuffer {
+    width: u32,
+    height: u32,
+    pitch: u32,
+    buffer: *mut u8,
+    #[allow(dead_code)]
+    size: u32,
+}
 
-            // Draw something to test
-            uart.write_line("  Drawing test pattern...");
-            draw_test_pattern(&fb);
-            uart.write_line("  Done!");
+static mut FB_INFO: Framebuffer = Framebuffer {
+    width: 0,
+    height: 0,
+    pitch: 0,
+    buffer: core::ptr::null_mut(),
+    size: 0,
+};
+
+fn fb_init(width: u32, height: u32, depth: u32) -> bool {
+    unsafe {
+        let mut i = 0usize;
+        
+        MAILBOX_BUFFER.data[i] = 0; i += 1;  // Size (fill later)
+        MAILBOX_BUFFER.data[i] = 0; i += 1;  // Request code
+        
+        // Set physical display size
+        MAILBOX_BUFFER.data[i] = TAG_FB_SET_PHYS_WH; i += 1;
+        MAILBOX_BUFFER.data[i] = 8; i += 1;   // Value buffer size
+        MAILBOX_BUFFER.data[i] = 0; i += 1;   // Request/response code
+        MAILBOX_BUFFER.data[i] = width; i += 1;
+        MAILBOX_BUFFER.data[i] = height; i += 1;
+        
+        // Set virtual display size (same as physical)
+        MAILBOX_BUFFER.data[i] = TAG_FB_SET_VIRT_WH; i += 1;
+        MAILBOX_BUFFER.data[i] = 8; i += 1;
+        MAILBOX_BUFFER.data[i] = 0; i += 1;
+        MAILBOX_BUFFER.data[i] = width; i += 1;
+        MAILBOX_BUFFER.data[i] = height; i += 1;
+        
+        // Set virtual offset to 0,0
+        MAILBOX_BUFFER.data[i] = TAG_FB_SET_VIRT_OFF; i += 1;
+        MAILBOX_BUFFER.data[i] = 8; i += 1;
+        MAILBOX_BUFFER.data[i] = 0; i += 1;
+        MAILBOX_BUFFER.data[i] = 0; i += 1;  // X offset
+        MAILBOX_BUFFER.data[i] = 0; i += 1;  // Y offset
+        
+        // Set color depth
+        MAILBOX_BUFFER.data[i] = TAG_FB_SET_DEPTH; i += 1;
+        MAILBOX_BUFFER.data[i] = 4; i += 1;
+        MAILBOX_BUFFER.data[i] = 0; i += 1;
+        MAILBOX_BUFFER.data[i] = depth; i += 1;
+        
+        // Allocate framebuffer
+        MAILBOX_BUFFER.data[i] = TAG_FB_ALLOC; i += 1;
+        MAILBOX_BUFFER.data[i] = 8; i += 1;
+        MAILBOX_BUFFER.data[i] = 0; i += 1;
+        MAILBOX_BUFFER.data[i] = 16; i += 1;  // Alignment
+        MAILBOX_BUFFER.data[i] = 0; i += 1;   // Size (response)
+        
+        // Get pitch
+        MAILBOX_BUFFER.data[i] = TAG_FB_GET_PITCH; i += 1;
+        MAILBOX_BUFFER.data[i] = 4; i += 1;
+        MAILBOX_BUFFER.data[i] = 0; i += 1;
+        MAILBOX_BUFFER.data[i] = 0; i += 1;   // Pitch (response)
+        
+        // End tag
+        MAILBOX_BUFFER.data[i] = TAG_END; i += 1;
+        
+        // Set message size
+        MAILBOX_BUFFER.data[0] = (i * 4) as u32;
+        
+        // Send to GPU
+        if !mailbox_call(MAILBOX_CH_PROP) {
+            return false;
         }
-        Err(e) => {
-            let _ = writeln!(
-                bootcore::fmt::SerialWriter(&mut uart),
-                "  Framebuffer ERROR: {:?}",
-                e
-            );
+        
+        // Check if we got a framebuffer (address at index 24)
+        if MAILBOX_BUFFER.data[24] == 0 {
+            return false;
+        }
+        
+        // Extract framebuffer info
+        FB_INFO.width = width;
+        FB_INFO.height = height;
+        // Convert bus address to ARM address (mask off upper bits)
+        FB_INFO.buffer = (MAILBOX_BUFFER.data[24] & 0x3FFFFFFF) as *mut u8;
+        FB_INFO.size = MAILBOX_BUFFER.data[25];
+        FB_INFO.pitch = MAILBOX_BUFFER.data[29];
+        
+        true
+    }
+}
+
+// ============================================================================
+// Drawing
+// ============================================================================
+
+/// Color in BGRA format
+#[derive(Clone, Copy)]
+struct Color {
+    b: u8,
+    g: u8,
+    r: u8,
+    a: u8,
+}
+
+const COLOR_BLACK: Color = Color { b: 0, g: 0, r: 0, a: 255 };
+const COLOR_GREEN: Color = Color { b: 0, g: 200, r: 0, a: 255 };
+
+fn fb_put_pixel(x: u32, y: u32, color: Color) {
+    unsafe {
+        if x >= FB_INFO.width || y >= FB_INFO.height {
+            return;
+        }
+        
+        let offset = (y * FB_INFO.pitch + x * 4) as isize;
+        let ptr = FB_INFO.buffer.offset(offset);
+        
+        *ptr.offset(0) = color.b;
+        *ptr.offset(1) = color.g;
+        *ptr.offset(2) = color.r;
+        *ptr.offset(3) = color.a;
+    }
+}
+
+fn fb_clear(color: Color) {
+    unsafe {
+        for y in 0..FB_INFO.height {
+            for x in 0..FB_INFO.width {
+                fb_put_pixel(x, y, color);
+            }
         }
     }
+}
 
-    // ========================================================================
-    // Print memory layout
-    // ========================================================================
-    uart.write_line("");
-    uart.write_line("Memory layout:");
-    let _ = writeln!(
-        bootcore::fmt::SerialWriter(&mut uart),
-        "  Kernel: 0x{:08X} - 0x{:08X} ({} MB)",
-        memory_map::KERNEL_BASE,
-        memory_map::KERNEL_END,
-        memory_map::KERNEL_REGION_SIZE / 1024 / 1024
-    );
-    let _ = writeln!(
-        bootcore::fmt::SerialWriter(&mut uart),
-        "  Heap:   0x{:08X} - 0x{:08X} ({} MB)",
-        memory_map::HEAP_BASE,
-        memory_map::HEAP_END,
-        memory_map::HEAP_SIZE / 1024 / 1024
-    );
+fn fb_fill_rect(x: u32, y: u32, w: u32, h: u32, color: Color) {
+    for py in y..(y + h) {
+        for px in x..(x + w) {
+            fb_put_pixel(px, py, color);
+        }
+    }
+}
 
-    // ========================================================================
-    // Enter echo loop
-    // ========================================================================
-    uart.write_line("");
-    uart.write_line("Boot complete. Entering echo mode...");
-    uart.write_line("");
+// Simple 8x8 font (just digits for demo)
+static FONT_0: [u8; 8] = [0x3C, 0x66, 0x6E, 0x76, 0x66, 0x66, 0x3C, 0x00];
+static FONT_1: [u8; 8] = [0x18, 0x38, 0x18, 0x18, 0x18, 0x18, 0x7E, 0x00];
+static FONT_2: [u8; 8] = [0x3C, 0x66, 0x06, 0x0C, 0x18, 0x30, 0x7E, 0x00];
 
+fn fb_draw_char(x: u32, y: u32, c: char, fg: Color, bg: Color) {
+    let glyph = match c {
+        '0' => &FONT_0,
+        '1' => &FONT_1,
+        '2' => &FONT_2,
+        _ => &FONT_0,
+    };
+    
+    for row in 0..8u32 {
+        let bits = glyph[row as usize];
+        for col in 0..8u32 {
+            let pixel = if (bits & (0x80 >> col)) != 0 { fg } else { bg };
+            fb_put_pixel(x + col, y + row, pixel);
+        }
+    }
+}
+
+// ============================================================================
+// Main Kernel Entry Point
+// ============================================================================
+
+const BLINK_DELAY: u32 = 500000;
+
+#[no_mangle]
+pub extern "C" fn kernel_main() -> ! {
+    // Initialize LED for debugging
+    led_init();
+    
+    // Blink 1: Kernel started
+    led_blink(1, BLINK_DELAY);
+    delay(BLINK_DELAY * 2);
+    
+    // Initialize framebuffer (1280x720 @ 32bpp)
+    if !fb_init(1280, 720, 32) {
+        // FB failed - blink rapidly forever
+        loop {
+            led_blink(5, BLINK_DELAY / 5);
+            delay(BLINK_DELAY * 2);
+        }
+    }
+    
+    // Blink 2: Framebuffer initialized
+    led_blink(2, BLINK_DELAY);
+    delay(BLINK_DELAY * 2);
+    
+    // Clear screen to black
+    fb_clear(COLOR_BLACK);
+    
+    // Blink 3: Screen cleared
+    led_blink(3, BLINK_DELAY);
+    
+    // Draw a green border
+    unsafe {
+        for x in 0..FB_INFO.width {
+            fb_put_pixel(x, 0, COLOR_GREEN);
+            fb_put_pixel(x, FB_INFO.height - 1, COLOR_GREEN);
+        }
+        for y in 0..FB_INFO.height {
+            fb_put_pixel(0, y, COLOR_GREEN);
+            fb_put_pixel(FB_INFO.width - 1, y, COLOR_GREEN);
+        }
+    }
+    
+    // Draw a title box
+    fb_fill_rect(40, 40, 600, 50, COLOR_GREEN);
+    
+    // Draw some test characters
+    fb_draw_char(60, 60, '0', COLOR_BLACK, COLOR_GREEN);
+    fb_draw_char(70, 60, '1', COLOR_BLACK, COLOR_GREEN);
+    fb_draw_char(80, 60, '2', COLOR_BLACK, COLOR_GREEN);
+    
+    // Success - slow heartbeat blink
     loop {
-        let byte = uart.read_byte();
-        uart.write_byte(byte);
-        if byte == b'\r' {
-            uart.write_byte(b'\n');
-        }
+        led_on();
+        delay(BLINK_DELAY / 2);
+        led_off();
+        delay(BLINK_DELAY * 4);
     }
 }
 
-/// Draw a simple test pattern to verify framebuffer works
-fn draw_test_pattern(fb: &mailbox::FramebufferInfo) {
-    let ptr = fb.address as *mut u32;
-    let pixels = (fb.size / 4) as usize;
-
-    for i in 0..pixels {
-        let x = i % (fb.pitch as usize / 4);
-        let y = i / (fb.pitch as usize / 4);
-
-        // Create colored stripes
-        let color = if y < (fb.height as usize / 3) {
-            0x00FF0000 // Red
-        } else if y < (2 * fb.height as usize / 3) {
-            0x0000FF00 // Green
-        } else {
-            0x000000FF // Blue
-        };
-
-        // Add vertical gradient
-        let brightness = (x * 255 / fb.width as usize) as u32;
-        let adjusted = match color {
-            0x00FF0000 => brightness << 16,
-            0x0000FF00 => brightness << 8,
-            0x000000FF => brightness,
-            _ => color,
-        };
-
-        unsafe {
-            core::ptr::write_volatile(ptr.add(i), adjusted);
-        }
-    }
-}
+// ============================================================================
+// Panic Handler
+// ============================================================================
 
 #[panic_handler]
-fn panic(info: &core::panic::PanicInfo) -> ! {
-    // Try to print panic info over UART
-    let mut uart = uart::MiniUart::new();
-    let _ = uart.init(115200);
-
-    uart.write_line("");
-    uart.write_line("!!! PANIC !!!");
-
-    if let Some(location) = info.location() {
-        let _ = writeln!(
-            bootcore::fmt::SerialWriter(&mut uart),
-            "at {}:{}:{}",
-            location.file(),
-            location.line(),
-            location.column()
-        );
+fn panic(_info: &core::panic::PanicInfo) -> ! {
+    // Rapid LED blink on panic
+    led_init();
+    loop {
+        led_blink(10, BLINK_DELAY / 10);
+        delay(BLINK_DELAY);
     }
-
-    if let Some(msg) = info.message().as_str() {
-        uart.write_str("message: ");
-        uart.write_line(msg);
-    }
-
-    bootcore::panic::halt_loop()
 }

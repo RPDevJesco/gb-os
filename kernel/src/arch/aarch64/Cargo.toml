@@ -14,4 +14,3 @@ bootcore = { workspace = true }
 
 [features]
 default = []
-default-entry = []  # Only include _start if this feature is enabled

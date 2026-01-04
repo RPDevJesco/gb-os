@@ -1,10 +1,11 @@
 [package]
 name = "xtask"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Build tool for rustboot"
 
-# xtask is a host tool, not embedded
-[dependencies]
-
-[features]
-default = []
+[[bin]]
+name = "xtask"
+path = "src/main.rs"

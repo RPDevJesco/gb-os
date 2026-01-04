@@ -5,7 +5,6 @@
 //! platform implementations must conform to.
 
 #![no_std]
-#![feature(const_trait_impl)]
 
 pub mod traits;
 pub mod boot_info;

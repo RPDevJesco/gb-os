@@ -1,63 +1,51 @@
-/* Linker script for Raspberry Pi 5 (BCM2712, Cortex-A76)
- *
- * NOTE: Pi 5 memory map differs from earlier Pis.
- * This needs verification against actual hardware.
+/*
+ * Raspberry Pi Zero 2 W Kernel Linker Script
+ * BCM2710A1 (Cortex-A53) - AArch64
+ * Kernel loads at 0x80000 in 64-bit mode
  */
 
 ENTRY(_start)
 
-MEMORY
-{
-    /* Pi 5 has 4GB/8GB RAM, kernel loaded at 0x80000 */
-    /* Using 1GB as safe limit - actual RAM depends on model */
-    RAM (rwx) : ORIGIN = 0x80000, LENGTH = 0x3FF80000
-}
-
-_stack_size = 0x10000;
-
 SECTIONS
 {
+    . = 0x80000;
+    
+    /* Code section - boot code MUST be first */
     .text : {
-        KEEP(*(.text._start))
-        KEEP(*(.text.vectors))
+        KEEP(*(.text.boot))    /* Boot assembly first */
         *(.text .text.*)
-    } > RAM
-
+    }
+    
+    /* Read-only data */
     .rodata : ALIGN(8) {
         *(.rodata .rodata.*)
-    } > RAM
-
+    }
+    
+    /* Initialized data */
     .data : ALIGN(8) {
-        __data_start = .;
         *(.data .data.*)
-        __data_end = .;
-    } > RAM
-
-    .bss : ALIGN(8) {
+    }
+    
+    /* BSS - zero-initialized data (16-byte aligned for mailbox buffer) */
+    .bss ALIGN(16) : {
         __bss_start = .;
         *(.bss .bss.*)
         *(COMMON)
         __bss_end = .;
-    } > RAM
-
+    }
+    
+    /* BSS size in 8-byte units (for clearing loop) */
+    __bss_size = (__bss_end - __bss_start) >> 3;
+    
     . = ALIGN(16);
-    _stack_bottom = .;
-    . = . + _stack_size;
-    _stack_top = .;
-
-    . = ALIGN(8);
-    _heap_start = .;
-    _heap_end = ORIGIN(RAM) + LENGTH(RAM);
-
+    __end = .;
+    
+    /* Discard unwanted sections */
     /DISCARD/ : {
         *(.ARM.*)
         *(.gnu.*)
         *(.note.*)
         *(.comment)
+        *(.eh_frame*)
     }
 }
-
-__text_start = ADDR(.text);
-__text_end = ADDR(.rodata);
-__rodata_start = ADDR(.rodata);
-__rodata_end = ADDR(.data);

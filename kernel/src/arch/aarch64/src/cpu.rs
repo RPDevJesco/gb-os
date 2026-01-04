@@ -1,71 +1,5 @@
 //! CPU register access and control.
 
-/// System control register (SCTLR_EL1) bits.
-pub mod sctlr {
-    pub const M: u64 = 1 << 0;      // MMU enable
-    pub const A: u64 = 1 << 1;      // Alignment check enable
-    pub const C: u64 = 1 << 2;      // Data cache enable
-    pub const SA: u64 = 1 << 3;     // Stack alignment check
-    pub const I: u64 = 1 << 12;     // Instruction cache enable
-    pub const WXN: u64 = 1 << 19;   // Write permission implies XN
-    pub const EE: u64 = 1 << 25;    // Exception endianness (0 = little)
-}
-
-/// Read SCTLR_EL1.
-#[inline]
-pub fn read_sctlr_el1() -> u64 {
-    let val: u64;
-    unsafe {
-        core::arch::asm!(
-            "mrs {}, sctlr_el1",
-            out(reg) val,
-            options(nomem, nostack)
-        );
-    }
-    val
-}
-
-/// Write SCTLR_EL1.
-#[inline]
-pub unsafe fn write_sctlr_el1(val: u64) {
-    unsafe {
-        core::arch::asm!(
-            "msr sctlr_el1, {}",
-            "isb",
-            in(reg) val,
-            options(nostack)
-        );
-    }
-}
-
-/// Read the counter frequency.
-#[inline]
-pub fn read_cntfrq_el0() -> u64 {
-    let val: u64;
-    unsafe {
-        core::arch::asm!(
-            "mrs {}, cntfrq_el0",
-            out(reg) val,
-            options(nomem, nostack)
-        );
-    }
-    val
-}
-
-/// Read the physical counter.
-#[inline]
-pub fn read_cntpct_el0() -> u64 {
-    let val: u64;
-    unsafe {
-        core::arch::asm!(
-            "mrs {}, cntpct_el0",
-            out(reg) val,
-            options(nomem, nostack)
-        );
-    }
-    val
-}
-
 /// Read the Main ID Register.
 #[inline]
 pub fn read_midr_el1() -> u64 {
@@ -113,50 +47,30 @@ impl Midr {
     }
 }
 
-/// Invalidate all instruction caches to PoU.
+/// Read the counter frequency.
 #[inline]
-pub unsafe fn invalidate_icache() {
+pub fn read_cntfrq_el0() -> u64 {
+    let val: u64;
     unsafe {
         core::arch::asm!(
-            "ic iallu",
-            "isb",
-            options(nostack)
+            "mrs {}, cntfrq_el0",
+            out(reg) val,
+            options(nomem, nostack)
         );
     }
+    val
 }
 
-/// Invalidate data cache line by virtual address.
+/// Read the physical counter.
 #[inline]
-pub unsafe fn invalidate_dcache_line(addr: usize) {
+pub fn read_cntpct_el0() -> u64 {
+    let val: u64;
     unsafe {
         core::arch::asm!(
-            "dc ivac, {}",
-            in(reg) addr,
-            options(nostack)
+            "mrs {}, cntpct_el0",
+            out(reg) val,
+            options(nomem, nostack)
         );
     }
-}
-
-/// Clean data cache line by virtual address.
-#[inline]
-pub unsafe fn clean_dcache_line(addr: usize) {
-    unsafe {
-        core::arch::asm!(
-            "dc cvac, {}",
-            in(reg) addr,
-            options(nostack)
-        );
-    }
-}
-
-/// Clean and invalidate data cache line by virtual address.
-#[inline]
-pub unsafe fn clean_invalidate_dcache_line(addr: usize) {
-    unsafe {
-        core::arch::asm!(
-            "dc civac, {}",
-            in(reg) addr,
-            options(nostack)
-        );
-    }
+    val
 }

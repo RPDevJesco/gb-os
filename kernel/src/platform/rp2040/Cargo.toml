@@ -13,6 +13,3 @@ path = "src/main.rs"
 [dependencies]
 bootcore = { workspace = true }
 arch-armv6m = { workspace = true }
-
-[features]
-default = []
