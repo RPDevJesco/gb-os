@@ -1,39 +1,117 @@
-# GPi Case 2W - Official timings from Batocera/RetroFlag
-# 640x480 IPS panel
+# GB-OS Configuration for RetroFlag GPi Case 2W
+# =============================================
+#
+# This config sets up the DPI display for the GPi Case 2W
+# and boots directly into the GB-OS kernel.
 
+# ============================================
+# Display Configuration - GPi Case 2W
+# ============================================
+
+# Disable overscan
 disable_overscan=1
 
-# DPI overlay - use the GPi Case specific one or standard dpi24
+# Enable DPI display
+enable_dpi_lcd=1
+display_default_lcd=1
+
+# Use DPI overlay (standard dpi24 works for GPi Case 2W)
 dtoverlay=dpi24
 
-# Display rotation (0 = normal landscape)
+# DPI output format
+# Format: 0x017 = RGB666, output enable mode, RGB order
+# Bit 0-3:  Output format (6 = RGB666 padded)
+# Bit 4:    Output enable mode (1 = enabled)
+# Bit 8-11: RGB order (1 = RGB)
+dpi_output_format=0x00017
+
+# DPI group and mode
+dpi_group=2
+dpi_mode=87
+
+# Display timings for 640x480 @ 60Hz
+# Format: h_active h_sync_pol h_fp h_sync h_bp v_active v_sync_pol v_fp v_sync v_bp interlace reduce_blanking pixel_freq aspect
+# GPi Case 2W uses 640x480 with 19.2MHz pixel clock
+hdmi_timings=640 0 1 1 20 480 0 1 1 2 0 0 0 60 0 19200000 1
+
+# Framebuffer dimensions (match display)
+framebuffer_width=640
+framebuffer_height=480
+
+# 32-bit color depth for easy pixel manipulation
+framebuffer_depth=32
+
+# No display rotation (0 = landscape)
 display_rotate=0
 
+# Disable overscan margins
 overscan_left=0
 overscan_right=0
 overscan_top=0
 overscan_bottom=0
 
-# Framebuffer at native resolution
-framebuffer_width=640
-framebuffer_height=480
+# ============================================
+# Memory Configuration
+# ============================================
 
-# Enable DPI LCD
-enable_dpi_lcd=1
-display_default_lcd=1
+# GPU memory allocation (minimum for bare-metal)
+# 32MB is enough for framebuffer and VideoCore
+gpu_mem=32
 
-# DPI mode settings
-dpi_group=2
-dpi_mode=87
-dpi_output_format=0x00016
+# ============================================
+# Boot Configuration
+# ============================================
 
-# GPi Case 2W specific timings (from Batocera config)
-# 640x480 @ 60Hz, 19.2MHz pixel clock
-hdmi_timings=640 0 1 1 20 480 0 1 1 2 0 0 0 60 0 19200000 1
-
-# 32-bit framebuffer
-framebuffer_depth=32
-
-# Boot kernel
+# Our bare-metal kernel
 kernel=kernel8.img
+
+# 64-bit ARM mode
 arm_64bit=1
+
+# Disable command line (we're bare-metal)
+# kernel_address=0x80000
+
+# ============================================
+# Power and Performance
+# ============================================
+
+# Allow higher clock speeds if needed
+# arm_freq=1000
+# over_voltage=0
+
+# Force turbo can help with consistent timing
+# force_turbo=1
+
+# ============================================
+# Audio (optional, not used in GB-OS yet)
+# ============================================
+
+# Disable HDMI audio (no HDMI on GPi Case 2W)
+hdmi_ignore_edid_audio=1
+
+# Audio via PWM on GPIO (for future audio support)
+# dtoverlay=audremap,pins_18_19
+
+# ============================================
+# GPIO Notes
+# ============================================
+#
+# GPIO pins used by DPI display (do not use for buttons):
+#   GPIO 0:  PCLK (Pixel Clock)
+#   GPIO 1:  DE (Data Enable)
+#   GPIO 2:  VSYNC
+#   GPIO 3:  HSYNC
+#   GPIO 4-9:   Blue [2:7]
+#   GPIO 10-15: Green [2:7]
+#   GPIO 16-21: Red [2:7]
+#
+# Available GPIO pins for buttons:
+#   GPIO 22-27: Can be used for input
+#   GPIO 4, 5, 6, etc.: Some may be available depending on DPI mode
+#
+# GPi Case 2W button GPIO assignments vary by revision.
+# Common configurations use:
+#   - D-Pad: GPIO 5, 6, 13, 19
+#   - Buttons: GPIO 12, 16, 20, 26
+#   - Shoulders: GPIO 4, 17
+#   - Menu: GPIO 22-27
