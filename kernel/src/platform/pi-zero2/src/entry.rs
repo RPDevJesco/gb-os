@@ -1,11 +1,18 @@
-//! AArch64 Entry Point for Pi Zero 2W
+//! AArch64 Entry Point
 //!
-//! Memory Layout:
-//!   - Kernel loads at 0x0008_0000
-//!   - Stack at 0x0010_0000 (256KB below kernel)
-//!   - Heap at 0x0100_0000 (16MB mark, 256MB size)
+//! Boot code that runs when the kernel is loaded by the GPU firmware.
+//! Sets up the stack and jumps to Rust code.
+//!
+//! Memory layout at boot:
+//! - Kernel loaded at 0x80000 by GPU firmware
+//! - Stack at 0x100000 (grows downward)
+//! - Heap starts after kernel BSS
 
 use core::arch::global_asm;
+
+// ============================================================================
+// Boot Assembly
+// ============================================================================
 
 global_asm!(
     r#"
@@ -21,9 +28,9 @@ _start:
     cbnz    x0, .Lpark
 
     // Core 0: Set up stack pointer
-    // Stack grows down from 0x0010_0000 (gives 512KB stack space)
+    // Stack at 0x100000, grows down (512KB below kernel load address)
     mov     x1, #0x0010
-    lsl     x1, x1, #16        // x1 = 0x0010_0000
+    lsl     x1, x1, #16        // x1 = 0x100000
     mov     sp, x1
 
     // Clear BSS section
@@ -38,9 +45,9 @@ _start:
 
     // Jump to Rust entry point
     mov     x0, #0             // core_id = 0
-    bl      boot_main
+    bl      kernel_main
 
-    // If boot_main returns, halt
+    // If kernel_main returns, halt
 .Lhalt:
     wfe
     b       .Lhalt
@@ -52,8 +59,27 @@ _start:
 "#
 );
 
-// Linker-provided symbols
+// ============================================================================
+// Linker Symbols
+// ============================================================================
+
 extern "C" {
+    /// Start of BSS section (defined in linker script).
     static __bss_start: u8;
+    /// End of BSS section (defined in linker script).
     static __bss_end: u8;
+    /// Start of kernel (0x80000).
+    static __kernel_start: u8;
+    /// End of kernel.
+    static __kernel_end: u8;
+}
+
+/// Get the BSS section range.
+pub fn bss_range() -> (*const u8, *const u8) {
+    unsafe { (&__bss_start as *const u8, &__bss_end as *const u8) }
+}
+
+/// Get the kernel memory range.
+pub fn kernel_range() -> (*const u8, *const u8) {
+    unsafe { (&__kernel_start as *const u8, &__kernel_end as *const u8) }
 }

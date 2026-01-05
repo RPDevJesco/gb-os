@@ -4,7 +4,6 @@
 //!
 
 pub mod font;
-
 pub mod font_4x6;
 pub mod font_8x8;
 pub mod framebuffer;

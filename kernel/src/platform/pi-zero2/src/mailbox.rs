@@ -1,540 +1,349 @@
 //! VideoCore Mailbox Interface
 //!
-//! The mailbox is the communication channel between ARM and VideoCore GPU.
-//! Used for:
-//!   - Querying memory configuration
-//!   - Setting up framebuffer
-//!   - Configuring clocks
-//!   - Power management
+//! The mailbox is used to communicate with the VideoCore GPU for:
+//! - Framebuffer allocation
+//! - Power management
+//! - Clock configuration
+//! - Hardware information queries
 //!
 //! # Protocol
 //!
-//! 1. Build property buffer with tags
-//! 2. Write buffer address (bus address) to mailbox
-//! 3. Wait for response
-//! 4. Read results from buffer
-//!
-//! # Buffer Format
-//!
-//! ```text
-//! Offset  Size  Description
-//! ──────────────────────────────────
-//! 0       4     Buffer size (bytes)
-//! 4       4     Request/Response code
-//! 8       N     Tags (variable)
-//! 8+N     4     End tag (0x0)
-//! ```
-//!
-//! # Tag Format
-//!
-//! ```text
+//! 1. Build message buffer (16-byte aligned)
+//! 2. Write buffer address | channel to MBOX_WRITE
+//! 3. Wait for response on MBOX_READ
+//! 4. Check response code in buffer
 
-#![allow(dead_code)]
-//! Offset  Size  Description
-//! ──────────────────────────────────
-//! 0       4     Tag ID
-//! 4       4     Value buffer size
-//! 8       4     Request/Response size
-//! 12      N     Value buffer
-//! ```
-
-use crate::mmio;
-use crate::memory_map::{self, phys_to_bus};
+use crate::mmio::{self, PERIPHERAL_BASE};
 
 // ============================================================================
-// Mailbox Registers
+// Register Addresses
 // ============================================================================
 
-/// Mailbox base address (BCM2710/BCM2837)
-const MAILBOX_BASE: usize = memory_map::PERIPHERAL_BASE + 0x0000_B880;
+const MBOX_BASE: usize = PERIPHERAL_BASE + 0x0000_B880;
 
-/// Mailbox 0 read register
-const MBOX_READ: usize = MAILBOX_BASE + 0x00;
+const MBOX_READ: usize = MBOX_BASE + 0x00;
+const MBOX_STATUS: usize = MBOX_BASE + 0x18;
+const MBOX_WRITE: usize = MBOX_BASE + 0x20;
 
-/// Mailbox 0 poll register (unused)
-const MBOX_POLL: usize = MAILBOX_BASE + 0x10;
+// Status bits
+const MBOX_FULL: u32 = 0x8000_0000;
+const MBOX_EMPTY: u32 = 0x4000_0000;
 
-/// Mailbox 0 sender register (unused)
-const MBOX_SENDER: usize = MAILBOX_BASE + 0x14;
+// Response codes
+const RESPONSE_SUCCESS: u32 = 0x8000_0000;
 
-/// Mailbox 0 status register
-const MBOX_STATUS: usize = MAILBOX_BASE + 0x18;
+// ============================================================================
+// Mailbox Channels
+// ============================================================================
 
-/// Mailbox 0 configuration register (unused)
-const MBOX_CONFIG: usize = MAILBOX_BASE + 0x1C;
-
-/// Mailbox 1 write register
-const MBOX_WRITE: usize = MAILBOX_BASE + 0x20;
-
-/// Status register bits
-mod status {
-    /// Mailbox is full (cannot write)
-    pub const FULL: u32 = 0x8000_0000;
-    /// Mailbox is empty (cannot read)
-    pub const EMPTY: u32 = 0x4000_0000;
-}
-
-/// Mailbox channels
+/// Mailbox channel numbers.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy)]
 pub enum Channel {
-    /// Power management
     Power = 0,
-    /// Framebuffer
     Framebuffer = 1,
-    /// Virtual UART
     VirtualUart = 2,
-    /// VCHIQ
     Vchiq = 3,
-    /// LEDs
     Leds = 4,
-    /// Buttons
     Buttons = 5,
-    /// Touchscreen
     Touchscreen = 6,
-    /// Property tags (ARM → VC)
     PropertyArmToVc = 8,
-    /// Property tags (VC → ARM)
     PropertyVcToArm = 9,
 }
-
-// ============================================================================
-// Request/Response Codes
-// ============================================================================
-
-/// Request code (in buffer header)
-const REQUEST_CODE: u32 = 0x0000_0000;
-
-/// Response success
-const RESPONSE_SUCCESS: u32 = 0x8000_0000;
-
-/// Response error (parsing error)
-const RESPONSE_ERROR: u32 = 0x8000_0001;
 
 // ============================================================================
 // Property Tags
 // ============================================================================
 
-/// Property tag IDs
+/// Property tag IDs for mailbox requests.
 pub mod tag {
-    // VideoCore info
-    pub const GET_FIRMWARE_REV: u32 = 0x0000_0001;
-
     // Hardware info
+    pub const GET_FIRMWARE_REV: u32 = 0x0000_0001;
     pub const GET_BOARD_MODEL: u32 = 0x0001_0001;
     pub const GET_BOARD_REV: u32 = 0x0001_0002;
-    pub const GET_BOARD_MAC: u32 = 0x0001_0003;
     pub const GET_BOARD_SERIAL: u32 = 0x0001_0004;
     pub const GET_ARM_MEMORY: u32 = 0x0001_0005;
     pub const GET_VC_MEMORY: u32 = 0x0001_0006;
 
+    // Power
+    pub const GET_POWER_STATE: u32 = 0x0002_0001;
+    pub const SET_POWER_STATE: u32 = 0x0002_8001;
+
     // Clocks
     pub const GET_CLOCK_RATE: u32 = 0x0003_0002;
-    pub const GET_MAX_CLOCK_RATE: u32 = 0x0003_0004;
-    pub const GET_MIN_CLOCK_RATE: u32 = 0x0003_0007;
     pub const SET_CLOCK_RATE: u32 = 0x0003_8002;
 
     // Framebuffer
     pub const ALLOCATE_BUFFER: u32 = 0x0004_0001;
     pub const RELEASE_BUFFER: u32 = 0x0004_8001;
-    pub const BLANK_SCREEN: u32 = 0x0004_0002;
-    pub const GET_PHYSICAL_SIZE: u32 = 0x0004_0003;
-    pub const TEST_PHYSICAL_SIZE: u32 = 0x0004_4003;
     pub const SET_PHYSICAL_SIZE: u32 = 0x0004_8003;
-    pub const GET_VIRTUAL_SIZE: u32 = 0x0004_0004;
-    pub const TEST_VIRTUAL_SIZE: u32 = 0x0004_4004;
     pub const SET_VIRTUAL_SIZE: u32 = 0x0004_8004;
-    pub const GET_DEPTH: u32 = 0x0004_0005;
-    pub const TEST_DEPTH: u32 = 0x0004_4005;
     pub const SET_DEPTH: u32 = 0x0004_8005;
-    pub const GET_PIXEL_ORDER: u32 = 0x0004_0006;
-    pub const TEST_PIXEL_ORDER: u32 = 0x0004_4006;
     pub const SET_PIXEL_ORDER: u32 = 0x0004_8006;
-    pub const GET_ALPHA_MODE: u32 = 0x0004_0007;
-    pub const TEST_ALPHA_MODE: u32 = 0x0004_4007;
-    pub const SET_ALPHA_MODE: u32 = 0x0004_8007;
     pub const GET_PITCH: u32 = 0x0004_0008;
-    pub const GET_VIRTUAL_OFFSET: u32 = 0x0004_0009;
     pub const SET_VIRTUAL_OFFSET: u32 = 0x0004_8009;
 
-    /// End tag (terminates tag list)
     pub const END: u32 = 0x0000_0000;
 }
 
-/// Clock IDs for clock rate tags
-pub mod clock {
-    pub const EMMC: u32 = 0x1;
-    pub const UART: u32 = 0x2;
-    pub const ARM: u32 = 0x3;
-    pub const CORE: u32 = 0x4;
-    pub const V3D: u32 = 0x5;
-    pub const H264: u32 = 0x6;
-    pub const ISP: u32 = 0x7;
-    pub const SDRAM: u32 = 0x8;
-    pub const PIXEL: u32 = 0x9;
-    pub const PWM: u32 = 0xA;
-    pub const HEVC: u32 = 0xB;
-    pub const EMMC2: u32 = 0xC;
-    pub const M2MC: u32 = 0xD;
-    pub const PIXEL_BVB: u32 = 0xE;
+/// Power device IDs.
+pub mod device {
+    pub const SD_CARD: u32 = 0;
+    pub const UART0: u32 = 1;
+    pub const UART1: u32 = 2;
+    pub const USB_HCD: u32 = 3;
+    pub const I2C0: u32 = 4;
+    pub const I2C1: u32 = 5;
+    pub const I2C2: u32 = 6;
+    pub const SPI: u32 = 7;
+    pub const CCP2TX: u32 = 8;
 }
 
 // ============================================================================
 // Mailbox Buffer
 // ============================================================================
 
-/// Maximum buffer size (must fit in our allocated region)
-const MAX_BUFFER_SIZE: usize = 256;
-
-/// Property buffer (16-byte aligned for DMA)
+/// 16-byte aligned mailbox buffer.
 #[repr(C, align(16))]
-pub struct PropertyBuffer {
-    data: [u32; MAX_BUFFER_SIZE / 4],
+pub struct MailboxBuffer {
+    pub data: [u32; 64],
 }
 
-impl PropertyBuffer {
-    /// Create empty buffer
+impl MailboxBuffer {
     pub const fn new() -> Self {
-        Self {
-            data: [0; MAX_BUFFER_SIZE / 4],
-        }
+        Self { data: [0; 64] }
     }
 
-    /// Get buffer address
-    pub fn as_ptr(&self) -> *const u32 {
-        self.data.as_ptr()
-    }
-
-    /// Get mutable buffer address
-    pub fn as_mut_ptr(&mut self) -> *mut u32 {
-        self.data.as_mut_ptr()
-    }
-
-    /// Get physical address
-    pub fn phys_addr(&self) -> usize {
-        self.as_ptr() as usize
-    }
-
-    /// Get bus address (for VideoCore DMA)
-    pub fn bus_addr(&self) -> u32 {
-        phys_to_bus(self.phys_addr())
+    /// Clear the buffer.
+    pub fn clear(&mut self) {
+        self.data.fill(0);
     }
 }
 
 // ============================================================================
-// Mailbox Driver
+// Low-Level Mailbox Access
 // ============================================================================
 
-/// Mailbox interface
-pub struct Mailbox {
-    buffer: PropertyBuffer,
-}
+/// Send a message to the mailbox and wait for response.
+///
+/// # Arguments
+/// * `buffer` - 16-byte aligned buffer with message
+/// * `channel` - Mailbox channel
+///
+/// # Returns
+/// `true` if the response indicates success.
+pub fn call(buffer: &mut MailboxBuffer, channel: Channel) -> bool {
+    let addr = buffer.data.as_ptr() as u32;
 
-impl Mailbox {
-    /// Create new mailbox interface
-    pub const fn new() -> Self {
-        Self {
-            buffer: PropertyBuffer::new(),
-        }
+    // Wait for mailbox to have space
+    while (mmio::read(MBOX_STATUS) & MBOX_FULL) != 0 {
+        core::hint::spin_loop();
     }
 
-    /// Wait until mailbox is not full
-    fn wait_write_ready(&self) {
-        loop {
-            if (mmio::read(MBOX_STATUS) & status::FULL) == 0 {
-                break;
-            }
+    // Write message (address | channel)
+    mmio::write(MBOX_WRITE, (addr & !0xF) | (channel as u32 & 0xF));
+
+    // Wait for response
+    loop {
+        while (mmio::read(MBOX_STATUS) & MBOX_EMPTY) != 0 {
             core::hint::spin_loop();
         }
-    }
 
-    /// Wait until mailbox has data
-    fn wait_read_ready(&self) {
-        loop {
-            if (mmio::read(MBOX_STATUS) & status::EMPTY) == 0 {
-                break;
-            }
-            core::hint::spin_loop();
+        let response = mmio::read(MBOX_READ);
+        if (response & 0xF) == channel as u32 {
+            break;
         }
     }
 
-    /// Send buffer to mailbox and wait for response
-    fn call(&mut self, channel: Channel) -> Result<(), MailboxError> {
-        // Ensure 16-byte alignment
-        let addr = self.buffer.phys_addr();
-        if addr & 0xF != 0 {
-            return Err(MailboxError::NotAligned);
-        }
+    // Check response code
+    buffer.data[1] == RESPONSE_SUCCESS
+}
 
-        // Combine address with channel (lower 4 bits)
-        let value = (self.buffer.bus_addr() & !0xF) | (channel as u32);
+// ============================================================================
+// High-Level API
+// ============================================================================
 
-        // Write to mailbox
-        self.wait_write_ready();
-        mmio::write(MBOX_WRITE, value);
+/// Set power state for a device.
+///
+/// # Arguments
+/// * `device_id` - Device ID from `device` module
+/// * `on` - `true` to power on, `false` to power off
+///
+/// # Returns
+/// `true` if the device is now in the requested state.
+pub fn set_power_state(device_id: u32, on: bool) -> bool {
+    let mut mbox = MailboxBuffer::new();
 
-        // Wait for response
-        loop {
-            self.wait_read_ready();
-            let response = mmio::read(MBOX_READ);
+    mbox.data[0] = 8 * 4;              // Buffer size
+    mbox.data[1] = 0;                  // Request code
+    mbox.data[2] = tag::SET_POWER_STATE;
+    mbox.data[3] = 8;                  // Value buffer size
+    mbox.data[4] = 8;                  // Request size
+    mbox.data[5] = device_id;
+    mbox.data[6] = if on { 3 } else { 0 };  // State (bit 0 = on, bit 1 = wait)
+    mbox.data[7] = tag::END;
 
-            // Check if this response is for our channel
-            if (response & 0xF) == (channel as u32) {
-                break;
-            }
-            // Otherwise, keep waiting (response was for different channel)
-        }
+    call(&mut mbox, Channel::PropertyArmToVc) && (mbox.data[6] & 1) != 0
+}
 
-        // Check response code in buffer
-        let response_code = self.buffer.data[1];
-        if response_code == RESPONSE_SUCCESS {
-            Ok(())
-        } else if response_code == RESPONSE_ERROR {
-            Err(MailboxError::ResponseError)
-        } else {
-            Err(MailboxError::InvalidResponse(response_code))
-        }
+/// Get ARM memory base and size.
+pub fn get_arm_memory() -> Option<(u32, u32)> {
+    let mut mbox = MailboxBuffer::new();
+
+    mbox.data[0] = 8 * 4;
+    mbox.data[1] = 0;
+    mbox.data[2] = tag::GET_ARM_MEMORY;
+    mbox.data[3] = 8;
+    mbox.data[4] = 0;
+    mbox.data[5] = 0;
+    mbox.data[6] = 0;
+    mbox.data[7] = tag::END;
+
+    if call(&mut mbox, Channel::PropertyArmToVc) {
+        Some((mbox.data[5], mbox.data[6]))
+    } else {
+        None
     }
+}
 
-    /// Build and send a single-tag request
-    fn single_tag_request(
-        &mut self,
-        tag_id: u32,
-        request: &[u32],
-        response_words: usize,
-    ) -> Result<(), MailboxError> {
-        // Calculate sizes
-        let value_size = response_words.max(request.len()) * 4;
-        let total_size = 12 + 12 + value_size + 4; // header + tag header + value + end
+/// Get VideoCore memory base and size.
+pub fn get_vc_memory() -> Option<(u32, u32)> {
+    let mut mbox = MailboxBuffer::new();
 
-        // Build buffer
-        self.buffer.data[0] = total_size as u32; // Buffer size
-        self.buffer.data[1] = REQUEST_CODE;       // Request code
+    mbox.data[0] = 8 * 4;
+    mbox.data[1] = 0;
+    mbox.data[2] = tag::GET_VC_MEMORY;
+    mbox.data[3] = 8;
+    mbox.data[4] = 0;
+    mbox.data[5] = 0;
+    mbox.data[6] = 0;
+    mbox.data[7] = tag::END;
 
-        // Tag
-        self.buffer.data[2] = tag_id;             // Tag ID
-        self.buffer.data[3] = value_size as u32;  // Value buffer size
-        self.buffer.data[4] = 0;                  // Request size (0 = request)
-
-        // Copy request data
-        for (i, &val) in request.iter().enumerate() {
-            self.buffer.data[5 + i] = val;
-        }
-
-        // End tag
-        let end_offset = 5 + (value_size / 4);
-        self.buffer.data[end_offset] = tag::END;
-
-        // Send request
-        self.call(Channel::PropertyArmToVc)
+    if call(&mut mbox, Channel::PropertyArmToVc) {
+        Some((mbox.data[5], mbox.data[6]))
+    } else {
+        None
     }
+}
 
-    // ========================================================================
-    // High-Level API
-    // ========================================================================
+/// Get board revision.
+pub fn get_board_revision() -> Option<u32> {
+    let mut mbox = MailboxBuffer::new();
 
-    /// Get ARM memory base and size
-    pub fn get_arm_memory(&mut self) -> Result<(u32, u32), MailboxError> {
-        self.single_tag_request(tag::GET_ARM_MEMORY, &[], 2)?;
-        Ok((self.buffer.data[5], self.buffer.data[6]))
-    }
+    mbox.data[0] = 7 * 4;
+    mbox.data[1] = 0;
+    mbox.data[2] = tag::GET_BOARD_REV;
+    mbox.data[3] = 4;
+    mbox.data[4] = 0;
+    mbox.data[5] = 0;
+    mbox.data[6] = tag::END;
 
-    /// Get VideoCore memory base and size
-    pub fn get_vc_memory(&mut self) -> Result<(u32, u32), MailboxError> {
-        self.single_tag_request(tag::GET_VC_MEMORY, &[], 2)?;
-        Ok((self.buffer.data[5], self.buffer.data[6]))
-    }
-
-    /// Get board revision
-    pub fn get_board_revision(&mut self) -> Result<u32, MailboxError> {
-        self.single_tag_request(tag::GET_BOARD_REV, &[], 1)?;
-        Ok(self.buffer.data[5])
-    }
-
-    /// Get board serial number
-    pub fn get_board_serial(&mut self) -> Result<u64, MailboxError> {
-        self.single_tag_request(tag::GET_BOARD_SERIAL, &[], 2)?;
-        let low = self.buffer.data[5] as u64;
-        let high = self.buffer.data[6] as u64;
-        Ok((high << 32) | low)
-    }
-
-    /// Get clock rate in Hz
-    pub fn get_clock_rate(&mut self, clock_id: u32) -> Result<u32, MailboxError> {
-        self.single_tag_request(tag::GET_CLOCK_RATE, &[clock_id], 2)?;
-        Ok(self.buffer.data[6])
-    }
-
-    /// Set clock rate in Hz, returns actual rate
-    pub fn set_clock_rate(&mut self, clock_id: u32, rate_hz: u32) -> Result<u32, MailboxError> {
-        // Request: clock_id, rate, skip_turbo (0 = don't skip)
-        self.single_tag_request(tag::SET_CLOCK_RATE, &[clock_id, rate_hz, 0], 2)?;
-        Ok(self.buffer.data[6])
-    }
-
-    /// Allocate framebuffer
-    /// Returns (base_address, size_bytes)
-    pub fn allocate_framebuffer(&mut self, alignment: u32) -> Result<(u32, u32), MailboxError> {
-        self.single_tag_request(tag::ALLOCATE_BUFFER, &[alignment], 2)?;
-        // Response is bus address - convert to ARM physical
-        let bus_addr = self.buffer.data[5];
-        let size = self.buffer.data[6];
-        Ok((bus_addr & 0x3FFF_FFFF, size))
-    }
-
-    /// Set physical (display) size
-    pub fn set_physical_size(&mut self, width: u32, height: u32) -> Result<(u32, u32), MailboxError> {
-        self.single_tag_request(tag::SET_PHYSICAL_SIZE, &[width, height], 2)?;
-        Ok((self.buffer.data[5], self.buffer.data[6]))
-    }
-
-    /// Set virtual (framebuffer) size
-    pub fn set_virtual_size(&mut self, width: u32, height: u32) -> Result<(u32, u32), MailboxError> {
-        self.single_tag_request(tag::SET_VIRTUAL_SIZE, &[width, height], 2)?;
-        Ok((self.buffer.data[5], self.buffer.data[6]))
-    }
-
-    /// Set color depth in bits per pixel
-    pub fn set_depth(&mut self, bits: u32) -> Result<u32, MailboxError> {
-        self.single_tag_request(tag::SET_DEPTH, &[bits], 1)?;
-        Ok(self.buffer.data[5])
-    }
-
-    /// Set pixel order (0 = BGR, 1 = RGB)
-    pub fn set_pixel_order(&mut self, rgb: bool) -> Result<u32, MailboxError> {
-        self.single_tag_request(tag::SET_PIXEL_ORDER, &[rgb as u32], 1)?;
-        Ok(self.buffer.data[5])
-    }
-
-    /// Get pitch (bytes per row)
-    pub fn get_pitch(&mut self) -> Result<u32, MailboxError> {
-        self.single_tag_request(tag::GET_PITCH, &[], 1)?;
-        Ok(self.buffer.data[5])
-    }
-
-    /// Set virtual offset (for double buffering)
-    pub fn set_virtual_offset(&mut self, x: u32, y: u32) -> Result<(u32, u32), MailboxError> {
-        self.single_tag_request(tag::SET_VIRTUAL_OFFSET, &[x, y], 2)?;
-        Ok((self.buffer.data[5], self.buffer.data[6]))
-    }
-
-    // ========================================================================
-    // Framebuffer Setup (convenience function)
-    // ========================================================================
-
-    /// Initialize framebuffer with given parameters
-    pub fn init_framebuffer(
-        &mut self,
-        width: u32,
-        height: u32,
-        depth: u32,
-    ) -> Result<FramebufferInfo, MailboxError> {
-        // Set physical size
-        let (phys_w, phys_h) = self.set_physical_size(width, height)?;
-
-        // Set virtual size (same as physical for single buffer)
-        let (virt_w, virt_h) = self.set_virtual_size(width, height)?;
-
-        // Set depth
-        let actual_depth = self.set_depth(depth)?;
-
-        // Set RGB order
-        self.set_pixel_order(true)?; // RGB
-
-        // Set offset to 0,0
-        self.set_virtual_offset(0, 0)?;
-
-        // Allocate framebuffer (16-byte aligned)
-        let (fb_addr, fb_size) = self.allocate_framebuffer(16)?;
-
-        // Get pitch
-        let pitch = self.get_pitch()?;
-
-        Ok(FramebufferInfo {
-            width: phys_w,
-            height: phys_h,
-            virtual_width: virt_w,
-            virtual_height: virt_h,
-            depth: actual_depth,
-            pitch,
-            address: fb_addr,
-            size: fb_size,
-        })
+    if call(&mut mbox, Channel::PropertyArmToVc) {
+        Some(mbox.data[5])
+    } else {
+        None
     }
 }
 
 // ============================================================================
-// Types
+// Framebuffer Allocation
 // ============================================================================
 
-/// Mailbox errors
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MailboxError {
-    /// Buffer not 16-byte aligned
-    NotAligned,
-    /// Response indicated error
-    ResponseError,
-    /// Invalid response code
-    InvalidResponse(u32),
-    /// Timeout waiting for response
-    Timeout,
-}
-
-/// Framebuffer information
+/// Framebuffer information returned from allocation.
 #[derive(Debug, Clone, Copy)]
 pub struct FramebufferInfo {
-    /// Physical width
-    pub width: u32,
-    /// Physical height
-    pub height: u32,
-    /// Virtual width
-    pub virtual_width: u32,
-    /// Virtual height
-    pub virtual_height: u32,
-    /// Bits per pixel
-    pub depth: u32,
-    /// Bytes per row
-    pub pitch: u32,
-    /// Framebuffer physical address
-    pub address: u32,
-    /// Framebuffer size in bytes
+    pub addr: u32,
     pub size: u32,
+    pub width: u32,
+    pub height: u32,
+    pub pitch: u32,
+    pub depth: u32,
 }
 
-impl FramebufferInfo {
-    /// Get framebuffer as mutable slice
-    ///
-    /// # Safety
-    /// Caller must ensure exclusive access to framebuffer memory
-    pub unsafe fn as_slice(&self) -> &'static mut [u8] {
-        unsafe {
-            core::slice::from_raw_parts_mut(
-                self.address as *mut u8,
-                self.size as usize,
-            )
-        }
-    }
-
-    /// Get pointer to pixel at (x, y)
-    pub fn pixel_ptr(&self, x: u32, y: u32) -> *mut u8 {
-        let bytes_per_pixel = self.depth / 8;
-        let offset = (y * self.pitch) + (x * bytes_per_pixel);
-        (self.address + offset) as *mut u8
-    }
-}
-
-// ============================================================================
-// Global Instance
-// ============================================================================
-
-/// Global mailbox instance
-static mut MAILBOX: Mailbox = Mailbox::new();
-
-/// Get mailbox instance
+/// Allocate a framebuffer with the specified parameters.
 ///
-/// # Safety
-/// Not thread-safe. Only call from single core during init.
-pub fn get_mailbox() -> &'static mut Mailbox {
-    // SAFETY: We only access this from core 0 during single-threaded init
-    unsafe { &mut *core::ptr::addr_of_mut!(MAILBOX) }
+/// # Arguments
+/// * `width` - Display width in pixels
+/// * `height` - Display height in pixels
+/// * `depth` - Bits per pixel (16, 24, or 32)
+///
+/// # Returns
+/// `Some(FramebufferInfo)` on success, `None` on failure.
+pub fn allocate_framebuffer(width: u32, height: u32, depth: u32) -> Option<FramebufferInfo> {
+    let mut mbox = MailboxBuffer::new();
+
+    // Build multi-tag request
+    mbox.data[0] = 35 * 4;             // Buffer size
+    mbox.data[1] = 0;                  // Request code
+
+    // Set physical size
+    mbox.data[2] = tag::SET_PHYSICAL_SIZE;
+    mbox.data[3] = 8;
+    mbox.data[4] = 8;
+    mbox.data[5] = width;
+    mbox.data[6] = height;
+
+    // Set virtual size (same as physical for single buffer)
+    mbox.data[7] = tag::SET_VIRTUAL_SIZE;
+    mbox.data[8] = 8;
+    mbox.data[9] = 8;
+    mbox.data[10] = width;
+    mbox.data[11] = height;
+
+    // Set virtual offset
+    mbox.data[12] = tag::SET_VIRTUAL_OFFSET;
+    mbox.data[13] = 8;
+    mbox.data[14] = 8;
+    mbox.data[15] = 0;
+    mbox.data[16] = 0;
+
+    // Set depth
+    mbox.data[17] = tag::SET_DEPTH;
+    mbox.data[18] = 4;
+    mbox.data[19] = 4;
+    mbox.data[20] = depth;
+
+    // Set pixel order (0 = BGR, 1 = RGB)
+    mbox.data[21] = tag::SET_PIXEL_ORDER;
+    mbox.data[22] = 4;
+    mbox.data[23] = 4;
+    mbox.data[24] = 1;                 // RGB
+
+    // Allocate buffer
+    mbox.data[25] = tag::ALLOCATE_BUFFER;
+    mbox.data[26] = 8;
+    mbox.data[27] = 8;
+    mbox.data[28] = 16;                // Alignment
+    mbox.data[29] = 0;                 // Size (filled by response)
+
+    // Get pitch
+    mbox.data[30] = tag::GET_PITCH;
+    mbox.data[31] = 4;
+    mbox.data[32] = 4;
+    mbox.data[33] = 0;
+
+    // End tag
+    mbox.data[34] = tag::END;
+
+    if !call(&mut mbox, Channel::PropertyArmToVc) {
+        return None;
+    }
+
+    // Extract results (convert bus address to ARM physical)
+    let fb_addr = mbox.data[28] & 0x3FFF_FFFF;
+    let fb_size = mbox.data[29];
+    let pitch = mbox.data[33];
+
+    if fb_addr == 0 || fb_size == 0 {
+        return None;
+    }
+
+    Some(FramebufferInfo {
+        addr: fb_addr,
+        size: fb_size,
+        width,
+        height,
+        pitch,
+        depth,
+    })
 }
