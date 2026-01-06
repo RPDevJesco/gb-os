@@ -1,33 +1,23 @@
 [package]
-name = "gb-os"
+name = "kernel"
 version = "0.1.0"
-edition = "2021"
-authors = ["gb-os Contributors"]
-description = "game boy emulations operating system"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+authors = ["GB-OS Contributors"]
+description = "GB-OS Kernel - x86 Game Boy Emulator OS"
 
-# Build as a binary (kernel executable)
+# Library target - exports shared modules for other platforms
+[lib]
+name = "kernel"
+path = "src/lib.rs"
+
+# Binary target - the x86 kernel
 [[bin]]
-name = "gb-os"
-path = "src/main.rs"
+name = "kernel"
+path = "main.rs"
 
 [dependencies]
-# No external dependencies - everything is no_std from scratch
-# We'll implement our own EventChains, intrusive lists, etc.
-
-[profile.dev]
-panic = "abort"
-opt-level = 1
-
-[profile.release]
-panic = "abort"
-opt-level = 2
-lto = true
-codegen-units = 1
+# Add any dependencies the kernel needs here
 
 [features]
 default = []
-# Feature flags for conditional compilation
-vga_text = []      # VGA text mode support
-vesa = []          # VESA graphics support
-debug = []         # Extra debug output
-#![feature(const_cmp)]

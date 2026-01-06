@@ -46,16 +46,16 @@ mod shoulder {
 #[repr(u16)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Button {
-    Up = 1 << 0,
-    Down = 1 << 1,
-    Left = 1 << 2,
-    Right = 1 << 3,
+    Right = 1 << 0,
+    Left = 1 << 1,
+    Up = 1 << 2,
+    Down = 1 << 3,
     A = 1 << 4,
     B = 1 << 5,
-    X = 1 << 6,
-    Y = 1 << 7,
-    Start = 1 << 8,
-    Select = 1 << 9,
+    Select = 1 << 6,
+    Start = 1 << 7,
+    X = 1 << 8,
+    Y = 1 << 9,
     L = 1 << 10,
     R = 1 << 11,
     Home = 1 << 12,
@@ -247,7 +247,7 @@ impl Input {
     }
 
     /// Read current button state from GPIO.
-    pub fn read(&mut self) -> u16 {
+    pub fn read(&self) -> u16 {
         if !self.initialized {
             return 0;
         }

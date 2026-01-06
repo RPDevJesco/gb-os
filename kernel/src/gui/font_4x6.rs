@@ -6,10 +6,36 @@
 //!
 //! Designed for overlay rendering where the 8x8 font is too large.
 
+#[cfg(target_arch = "x86")]
 use crate::graphics::vga_mode13h::{self, SCREEN_WIDTH};
 
-// Re-export colors for compatibility with existing code
+#[cfg(target_arch = "x86")]
 pub use crate::graphics::vga_mode13h::colors;
+
+#[cfg(not(target_arch = "x86"))]
+pub const SCREEN_WIDTH: usize = 320;
+
+#[cfg(not(target_arch = "x86"))]
+pub mod colors {
+    pub const BLACK: u8 = 0x00;
+    pub const BLUE: u8 = 0x01;
+    pub const DARK_GREEN: u8 = 0x02;
+    pub const CYAN: u8 = 0x03;
+    pub const RED: u8 = 0x04;
+    pub const MAGENTA: u8 = 0x05;
+    pub const BROWN: u8 = 0x06;
+    pub const LIGHT_GRAY: u8 = 0x07;
+    pub const DARK_GRAY: u8 = 0x08;
+    pub const LIGHT_BLUE: u8 = 0x09;
+    pub const GREEN: u8 = 0x0A;
+    pub const LIGHT_CYAN: u8 = 0x0B;
+    pub const LIGHT_RED: u8 = 0x0C;
+    pub const LIGHT_MAGENTA: u8 = 0x0D;
+    pub const YELLOW: u8 = 0x0E;
+    pub const WHITE: u8 = 0x0F;
+    pub const LIGHT_GREEN: u8 = 0x2A;
+    pub const HIGHLIGHT_BG: u8 = 0x02;
+}
 
 // ============================================================================
 // Font Data
@@ -791,6 +817,7 @@ pub fn chars_in_width(pixels: usize) -> usize {
 // ============================================================================
 
 /// Draw a single character directly to VGA memory
+#[cfg(target_arch = "x86")]
 #[inline(never)]
 pub fn draw_char_vga(x: usize, y: usize, ch: u8, color: u8) {
     let bitmap = get_char_bitmap(ch);
@@ -798,6 +825,7 @@ pub fn draw_char_vga(x: usize, y: usize, ch: u8, color: u8) {
 }
 
 /// Draw a string directly to VGA memory
+#[cfg(target_arch = "x86")]
 #[inline(never)]
 pub fn draw_string_vga(x: usize, y: usize, s: &str, color: u8) {
     let mut cx = x;
@@ -808,6 +836,7 @@ pub fn draw_string_vga(x: usize, y: usize, s: &str, color: u8) {
 }
 
 /// Draw a string centered horizontally, directly to VGA memory
+#[cfg(target_arch = "x86")]
 #[inline(never)]
 pub fn draw_string_centered_vga(y: usize, s: &str, color: u8) {
     let width = s.len() * CELL_WIDTH;

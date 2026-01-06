@@ -10,7 +10,14 @@
 //! 4. Use per-element dirty flags to minimize writes
 
 use crate::gui::layout::{element, Region, GB_X, GB_WIDTH, GB_BOTTOM};
+#[cfg(target_arch = "x86")]
 use crate::graphics::vga_mode13h::{SCREEN_WIDTH, SCREEN_HEIGHT};
+
+#[cfg(not(target_arch = "x86"))]
+pub const SCREEN_WIDTH: usize = 320;
+#[cfg(not(target_arch = "x86"))]
+pub const SCREEN_HEIGHT: usize = 200;
+
 use super::ram_layout::{Game, PartyState, TrainerData, Pokemon};
 
 // =============================================================================
@@ -579,13 +586,13 @@ pub fn init() {
 
 /// Get the global overlay cache
 pub fn cache() -> &'static mut OverlayCache {
-    unsafe { &mut OVERLAY_CACHE }
+    unsafe { &mut *core::ptr::addr_of_mut!(OVERLAY_CACHE) }
 }
 
 /// Get the element regions
 pub fn regions() -> &'static ElementRegions {
     unsafe {
-        ELEMENT_REGIONS
+        (*core::ptr::addr_of!(ELEMENT_REGIONS))
             .as_ref()
             .expect("dirty_region::init() not called")
     }
@@ -594,11 +601,11 @@ pub fn regions() -> &'static ElementRegions {
 /// Force full redraw on next frame
 pub fn invalidate_all() {
     unsafe {
-        OVERLAY_CACHE.invalidate();
+        (*core::ptr::addr_of_mut!(OVERLAY_CACHE)).invalidate();
     }
 }
 
 /// Check if system is initialized
 pub fn is_initialized() -> bool {
-    unsafe { ELEMENT_REGIONS.is_some() }
+    unsafe { (*core::ptr::addr_of!(ELEMENT_REGIONS)).is_some() }
 }

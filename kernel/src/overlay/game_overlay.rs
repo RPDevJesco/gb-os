@@ -17,9 +17,18 @@ use crate::overlay::map_names::{get_gen1_map_name, get_gen2_map_name};
 // use crate::overlay::item_names::{get_gen1_item_name, get_gen2_item_name};  // TODO: Enable when bag reading is implemented
 use crate::overlay::move_pp::{get_actual_max_pp, extract_pp_ups, extract_current_pp};
 use crate::overlay::catch_rate::{get_catch_rate, get_catch_tier};
-use crate::gui::font_4x6;
 use crate::gui::layout::{element, LayoutCursor, Region, GB_X, GB_WIDTH, GB_BOTTOM};
+
+#[cfg(target_arch = "x86")]
 use crate::graphics::vga_mode13h::{colors, SCREEN_HEIGHT, SCREEN_WIDTH};
+
+use crate::gui::font_4x6;
+#[cfg(not(target_arch = "x86"))]
+use font_4x6::colors;
+#[cfg(not(target_arch = "x86"))]
+pub const SCREEN_WIDTH: usize = 320;
+#[cfg(not(target_arch = "x86"))]
+pub const SCREEN_HEIGHT: usize = 200;
 
 // =============================================================================
 // Colors

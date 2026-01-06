@@ -348,5 +348,5 @@ pub unsafe fn init(buffer: *mut u8, width: u32, height: u32, bpp: u32, pitch: u3
 
 /// Get mutable reference to global framebuffer
 pub fn get() -> Option<&'static mut Framebuffer> {
-    unsafe { FRAMEBUFFER.as_mut() }
+    unsafe { (*core::ptr::addr_of_mut!(FRAMEBUFFER)).as_mut() }
 }

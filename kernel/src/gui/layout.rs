@@ -26,8 +26,13 @@
 //! }
 //! cursor.space(4);  // Add gap
 //! ```
-
+#[cfg(target_arch = "x86")]
 use crate::graphics::vga_mode13h::{SCREEN_WIDTH, SCREEN_HEIGHT};
+
+#[cfg(not(target_arch = "x86"))]
+pub const SCREEN_WIDTH: usize = 320;
+#[cfg(not(target_arch = "x86"))]
+pub const SCREEN_HEIGHT: usize = 200;
 
 // =============================================================================
 // Game Boy Screen Layout (VGA Mode 13h: 320x200)

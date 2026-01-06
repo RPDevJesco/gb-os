@@ -12,7 +12,7 @@
 //! # Memory Layout
 //! - Back buffer: 64KB static array in kernel BSS
 //! - Front buffer: VGA memory at 0xA0000
-
+#[cfg(target_arch = "x86")]
 use crate::graphics::vga_mode13h::{SCREEN_WIDTH, SCREEN_HEIGHT};
 use crate::gui::layout::{GB_X, GB_Y, GB_WIDTH, GB_HEIGHT};
 

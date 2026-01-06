@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 bootcore = { workspace = true }
 arch-aarch64 = { workspace = true }
+kernel = { path = "../../..", default-features = false }
 
 [features]
 default = []
