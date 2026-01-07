@@ -2100,9 +2100,9 @@ fn poll_usb_input() {
     }
 }
 
-/// Get current button state
-fn get_buttons() -> u16 {
-    unsafe { BUTTON_STATE.current }
+/// Get current button state (returns full struct for pressed/released calculation)
+fn get_buttons() -> GpiButtonState {
+    unsafe { BUTTON_STATE }
 }
 
 /// Check if button was just pressed this frame
