@@ -1167,8 +1167,6 @@ impl SdCard {
         Ok(())
     }
 
-    /// PERF: Use to_le_bytes() instead of manual byte extraction
-    /// This is cleaner and may allow compiler to optimize better
     fn read_sector(&mut self, lba: u32, buffer: &mut [u8; 512]) -> Result<(), &'static str> {
         if !self.initialized { return Err("Not init"); }
 
@@ -1187,9 +1185,11 @@ impl SdCard {
             let hsts = mmio_read(SDHOST_HSTS);
             if (hsts & SDHOST_HSTS_DATA_FLAG) != 0 {
                 let word = mmio_read(SDHOST_DATA);
-                // PERF: Use to_le_bytes() for cleaner byte extraction
-                let bytes = word.to_le_bytes();
-                buffer[idx..idx + 4].copy_from_slice(&bytes);
+                // Keep original byte-by-byte extraction - copy_from_slice caused issues
+                buffer[idx] = (word >> 0) as u8;
+                buffer[idx + 1] = (word >> 8) as u8;
+                buffer[idx + 2] = (word >> 16) as u8;
+                buffer[idx + 3] = (word >> 24) as u8;
                 idx += 4;
             }
         }
