@@ -2,6 +2,9 @@
 //!
 //! The GameBoy CPU is similar to Z80 but with some differences.
 //! Registers: AF, BC, DE, HL, SP, PC
+//!
+//! OPTIMIZED VERSION: Added #[inline(always)] for ARM bare-metal performance.
+//! Register access is THE most frequent operation in the emulator.
 
 use super::gbmode::GbMode;
 
@@ -63,55 +66,65 @@ impl Registers {
     }
 
     /// Get AF register pair
+    #[inline(always)]
     pub fn af(&self) -> u16 {
         ((self.a as u16) << 8) | (self.f as u16)
     }
 
     /// Set AF register pair
+    #[inline(always)]
     pub fn set_af(&mut self, value: u16) {
         self.a = (value >> 8) as u8;
         self.f = (value & 0xF0) as u8; // Lower 4 bits always 0
     }
 
     /// Get BC register pair
+    #[inline(always)]
     pub fn bc(&self) -> u16 {
         ((self.b as u16) << 8) | (self.c as u16)
     }
 
     /// Set BC register pair
+    #[inline(always)]
     pub fn set_bc(&mut self, value: u16) {
         self.b = (value >> 8) as u8;
         self.c = value as u8;
     }
 
     /// Get DE register pair
+    #[inline(always)]
     pub fn de(&self) -> u16 {
         ((self.d as u16) << 8) | (self.e as u16)
     }
 
     /// Set DE register pair
+    #[inline(always)]
     pub fn set_de(&mut self, value: u16) {
         self.d = (value >> 8) as u8;
         self.e = value as u8;
     }
 
     /// Get HL register pair
+    #[inline(always)]
     pub fn hl(&self) -> u16 {
         ((self.h as u16) << 8) | (self.l as u16)
     }
 
     /// Set HL register pair
+    #[inline(always)]
     pub fn set_hl(&mut self, value: u16) {
         self.h = (value >> 8) as u8;
         self.l = value as u8;
     }
 
     /// Get flag state
+    #[inline(always)]
     pub fn flag(&self, flag: CpuFlag) -> bool {
         self.f & (flag as u8) != 0
     }
 
     /// Set or clear a flag
+    #[inline(always)]
     pub fn set_flag(&mut self, flag: CpuFlag, value: bool) {
         if value {
             self.f |= flag as u8;

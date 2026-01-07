@@ -23,11 +23,12 @@ arch-aarch64 = { path = "arch/aarch64" }
 arch-armv6m = { path = "arch/armv6m" }
 
 [profile.release]
-opt-level = "z"
-lto = true
+opt-level = 2
+lto = "fat"
 codegen-units = 1
 panic = "abort"
 strip = "symbols"
+debug = false
 
 [profile.dev]
 panic = "abort"

@@ -14,7 +14,6 @@
 
 #![no_std]
 #![no_main]
-#![feature(alloc_error_handler)]
 
 extern crate alloc;
 
@@ -25,7 +24,19 @@ use core::ptr::{read_volatile, write_volatile};
 use core::fmt::Write;
 use core::alloc::{GlobalAlloc, Layout};
 use core::sync::atomic::{AtomicUsize, Ordering};
-
+mod multicore;
+use multicore::{
+    // Core management
+    start_core, init_gfx_core,
+    CORE1_RUNNING, CORE2_RUNNING,
+    USB_OWNED_BY_CORE1,
+    // Button reading
+    set_buttons, get_buttons, button_just_pressed, button_just_released, button_pressed,
+    // Graphics
+    request_blit, wait_blit_done,
+    // Barriers
+    dsb, sev,
+};
 // Import the real GameBoy emulator from kernel crate
 use kernel::gameboy::{Device, KeypadKey, gbmode::GbMode};
 
@@ -254,100 +265,20 @@ impl BumpAllocator {
     }
 }
 
-// Debug: global flag to show alloc debug on screen
-static ALLOC_DEBUG_ENABLED: AtomicUsize = AtomicUsize::new(0);
-static ALLOC_DEBUG_Y: AtomicUsize = AtomicUsize::new(0);
-static ALLOC_DEBUG_FB_ADDR: AtomicUsize = AtomicUsize::new(0);
-
-fn enable_alloc_debug(fb_addr: usize, start_y: usize) {
-    ALLOC_DEBUG_FB_ADDR.store(fb_addr, Ordering::Relaxed);
-    ALLOC_DEBUG_Y.store(start_y, Ordering::Relaxed);
-    ALLOC_DEBUG_ENABLED.store(1, Ordering::Relaxed);
-}
-
-fn disable_alloc_debug() {
-    ALLOC_DEBUG_ENABLED.store(0, Ordering::Relaxed);
-}
-
 unsafe impl GlobalAlloc for BumpAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let align = layout.align();
         let size = layout.size();
 
-        // DEBUG: Green pixel at (500, 100) = entered alloc
-        let fb_addr = ALLOC_DEBUG_FB_ADDR.load(Ordering::Relaxed);
-        if fb_addr != 0 {
-            let pitch = 640 * 4;
-            let offset = (100 * pitch + 500 * 4) as usize;
-            core::ptr::write_volatile((fb_addr + offset) as *mut u32, 0xFF00FF00);
-        }
-
-        // Blue = about to read next
-        if fb_addr != 0 {
-            let pitch = 640 * 4;
-            let offset = (110 * pitch + 500 * 4) as usize;
-            core::ptr::write_volatile((fb_addr + offset) as *mut u32, 0xFF0000FF);
-        }
-
-        // Simple volatile read (no atomics!)
         let current = core::ptr::read_volatile(self.next.get());
-
-        // Cyan = read next OK
-        if fb_addr != 0 {
-            let pitch = 640 * 4;
-            let offset = (110 * pitch + 510 * 4) as usize;
-            core::ptr::write_volatile((fb_addr + offset) as *mut u32, 0xFF00FFFF);
-        }
-
         let aligned = (current + align - 1) & !(align - 1);
-
-        // White = aligned OK
-        if fb_addr != 0 {
-            let pitch = 640 * 4;
-            let offset = (110 * pitch + 520 * 4) as usize;
-            core::ptr::write_volatile((fb_addr + offset) as *mut u32, 0xFFFFFFFF);
-        }
-
         let new_next = aligned + size;
 
-        // Orange = new_next OK
-        if fb_addr != 0 {
-            let pitch = 640 * 4;
-            let offset = (110 * pitch + 530 * 4) as usize;
-            core::ptr::write_volatile((fb_addr + offset) as *mut u32, 0xFFFF8000);
-        }
-
-        let heap_end = self.heap_end();
-
-        // Magenta = heap_end OK
-        if fb_addr != 0 {
-            let pitch = 640 * 4;
-            let offset = (110 * pitch + 540 * 4) as usize;
-            core::ptr::write_volatile((fb_addr + offset) as *mut u32, 0xFFFF00FF);
-        }
-
-        if new_next > heap_end {
-            // OOM - Red bar
-            if fb_addr != 0 {
-                let pitch = 640 * 4;
-                for i in 0..100u32 {
-                    let offset = (120 * pitch + (500 + i) * 4) as usize;
-                    core::ptr::write_volatile((fb_addr + offset) as *mut u32, 0xFFFF0000);
-                }
-            }
+        if new_next > self.heap_end() {
             return core::ptr::null_mut();
         }
 
-        // Simple volatile write (no CAS!)
         core::ptr::write_volatile(self.next.get(), new_next);
-
-        // Green at 550 = success
-        if fb_addr != 0 {
-            let pitch = 640 * 4;
-            let offset = (110 * pitch + 550 * 4) as usize;
-            core::ptr::write_volatile((fb_addr + offset) as *mut u32, 0xFF00FF00);
-        }
-
         aligned as *mut u8
     }
 
@@ -378,27 +309,6 @@ unsafe impl GlobalAlloc for BumpAllocator {
 #[global_allocator]
 static ALLOCATOR: BumpAllocator = BumpAllocator::new();
 
-#[alloc_error_handler]
-fn alloc_error(_layout: Layout) -> ! {
-    // Write big red rectangle across the screen to show alloc_error was triggered
-    let fb_addr = ALLOC_DEBUG_FB_ADDR.load(Ordering::Relaxed);
-    if fb_addr != 0 {
-        unsafe {
-            let pitch = 640 * 4;
-            // Draw thick red bar from y=0 to y=30
-            for y in 0u32..30 {
-                for x in 0u32..640 {
-                    let offset = (y * pitch + x * 4) as usize;
-                    core::ptr::write_volatile((fb_addr + offset) as *mut u32, 0xFFFF0000);
-                }
-            }
-        }
-    }
-    loop {
-        unsafe { core::arch::asm!("wfe"); }
-    }
-}
-
 // ============================================================================
 // Entry Point
 // ============================================================================
@@ -409,14 +319,33 @@ core::arch::global_asm!(
 .global _start
 
 _start:
+    // Get core ID from MPIDR_EL1
     mrs     x0, mpidr_el1
     and     x0, x0, #0xFF
-    cbnz    x0, .Lpark
 
-    mov     x1, #0x0010
-    lsl     x1, x1, #16
+    // Core 0 -> main boot
+    cbz     x0, .Lcore0_boot
+
+    // Core 1-3 -> secondary boot
+    cmp     x0, #1
+    b.eq    .Lcore1_wait
+    cmp     x0, #2
+    b.eq    .Lcore2_wait
+    cmp     x0, #3
+    b.eq    .Lcore3_wait
+
+    // Unknown core -> park
+    b       .Lpark
+
+// ============================================================================
+// Core 0: Main Boot
+// ============================================================================
+.Lcore0_boot:
+    // Set up stack for Core 0
+    ldr     x1, =__core0_stack_top
     mov     sp, x1
 
+    // Clear BSS
     ldr     x0, =__bss_start
     ldr     x1, =__bss_end
 .Lclear_bss:
@@ -426,8 +355,75 @@ _start:
     b       .Lclear_bss
 .Ldone_bss:
 
+    // Jump to Rust entry point
     bl      boot_main
 
+    // Should never return
+    b       .Lhalt
+
+// ============================================================================
+// Core 1: Wait for release, then run USB polling
+// ============================================================================
+.Lcore1_wait:
+    // Set up stack for Core 1
+    ldr     x1, =__core1_stack_top
+    mov     sp, x1
+
+    // Spin on release address 0xE0
+    mov     x5, #0xE0
+.Lcore1_spin:
+    wfe                         // Wait for event (low power)
+    ldr     x4, [x5]            // Load release address
+    cbz     x4, .Lcore1_spin    // If zero, keep waiting
+
+    // Clear the release address
+    str     xzr, [x5]
+    dsb     sy
+
+    // Jump to entry point
+    br      x4
+
+// ============================================================================
+// Core 2: Wait for release, then run graphics blitting
+// ============================================================================
+.Lcore2_wait:
+    // Set up stack for Core 2
+    ldr     x1, =__core2_stack_top
+    mov     sp, x1
+
+    // Spin on release address 0xE8
+    mov     x5, #0xE8
+.Lcore2_spin:
+    wfe
+    ldr     x4, [x5]
+    cbz     x4, .Lcore2_spin
+
+    str     xzr, [x5]
+    dsb     sy
+    br      x4
+
+// ============================================================================
+// Core 3: Wait for release (reserved for audio)
+// ============================================================================
+.Lcore3_wait:
+    // Set up stack for Core 3
+    ldr     x1, =__core3_stack_top
+    mov     sp, x1
+
+    // Spin on release address 0xF0
+    mov     x5, #0xF0
+.Lcore3_spin:
+    wfe
+    ldr     x4, [x5]
+    cbz     x4, .Lcore3_spin
+
+    str     xzr, [x5]
+    dsb     sy
+    br      x4
+
+// ============================================================================
+// Halt / Park
+// ============================================================================
 .Lhalt:
     wfe
     b       .Lhalt
@@ -478,24 +474,233 @@ fn delay_ms(ms: u32) {
 }
 
 // ============================================================================
+// CPU Cache Control
+// ============================================================================
+
+/// Get current exception level (1, 2, or 3)
+fn get_exception_level() -> u8 {
+    let el: u64;
+    unsafe {
+        core::arch::asm!("mrs {}, CurrentEL", out(reg) el);
+    }
+    ((el >> 2) & 0x3) as u8
+}
+
+/// Enable instruction cache only (used before MMU is set up)
+#[inline(never)]
+fn enable_caches() {
+    unsafe {
+        let mut sctlr: u64;
+        core::arch::asm!("mrs {}, sctlr_el1", out(reg) sctlr);
+        sctlr |= (1 << 12);  // Enable I-cache
+        sctlr &= !(1 << 2);  // Ensure D-cache is OFF (until MMU is on)
+        core::arch::asm!("msr sctlr_el1, {}", in(reg) sctlr);
+        core::arch::asm!("isb");
+    }
+}
+
+/// Check if caches are enabled, returns (icache_on, dcache_on)
+fn check_caches() -> (bool, bool) {
+    let sctlr: u64;
+    unsafe {
+        core::arch::asm!("mrs {}, sctlr_el1", out(reg) sctlr);
+    }
+    let icache = (sctlr & (1 << 12)) != 0;
+    let dcache = (sctlr & (1 << 2)) != 0;
+    (icache, dcache)
+}
+
+/// Clean D-cache for a memory range (flush dirty lines to RAM)
+/// This ensures the GPU can see data written by the CPU
+#[inline(never)]
+unsafe fn clean_dcache_range(start: usize, size: usize) {
+    // ARM Cortex-A53 has 64-byte cache lines
+    const CACHE_LINE_SIZE: usize = 64;
+
+    let mut addr = start & !(CACHE_LINE_SIZE - 1); // Align to cache line
+    let end = start + size;
+
+    while addr < end {
+        // DC CVAC - Clean by VA to Point of Coherency
+        core::arch::asm!("dc cvac, {}", in(reg) addr);
+        addr += CACHE_LINE_SIZE;
+    }
+
+    // Data synchronization barrier
+    core::arch::asm!("dsb sy");
+}
+
+// ============================================================================
+// MMU Configuration for D-Cache Support
+// ============================================================================
+
+// Page table - 512 entries, 4KB aligned
+#[repr(C, align(4096))]
+struct PageTable {
+    entries: [u64; 512],
+}
+
+// Static page tables
+static mut MMU_L1_TABLE: PageTable = PageTable { entries: [0; 512] };
+static mut MMU_L2_TABLE: PageTable = PageTable { entries: [0; 512] };
+
+// MAIR attribute indices
+const MAIR_IDX_DEVICE: u64 = 0;  // Device-nGnRnE
+const MAIR_IDX_NORMAL: u64 = 1;  // Normal cacheable
+
+// MAIR register value:
+// Attr0 = 0x00: Device-nGnRnE (for MMIO - no gather, no reorder, no early write ack)
+// Attr1 = 0xFF: Normal, Inner/Outer Write-Back, Read/Write Allocate
+const MAIR_VALUE: u64 = (0xFF << 8) | 0x00;
+
+// Page table entry bits for block descriptors
+const PTE_VALID: u64 = 1 << 0;
+const PTE_BLOCK: u64 = 0 << 1;      // Block descriptor (not table)
+const PTE_TABLE: u64 = 1 << 1;      // Table descriptor
+const PTE_ATTR_IDX_SHIFT: u64 = 2;
+const PTE_NS: u64 = 1 << 5;         // Non-secure
+const PTE_AP_RW: u64 = 0 << 6;      // Read-write at EL1
+const PTE_SH_INNER: u64 = 3 << 8;   // Inner shareable
+const PTE_AF: u64 = 1 << 10;        // Access flag (must be 1)
+const PTE_NG: u64 = 0 << 11;        // Global
+const PTE_PXN: u64 = 0 << 53;       // Privileged execute never (0 = can execute)
+const PTE_UXN: u64 = 1 << 54;       // User execute never
+
+// Block size for L2 entries: 2MB
+const BLOCK_SIZE_2MB: u64 = 2 * 1024 * 1024;
+
+/// Initialize MMU with identity mapping
+/// - 0x00000000 - 0x3EFFFFFF: Normal cacheable (RAM)
+/// - 0x3F000000 - 0x3FFFFFFF: Device memory (peripherals)
+///
+/// # Safety
+/// Must be called exactly once, early in boot, before D-cache is enabled
+#[inline(never)]
+unsafe fn init_mmu() {
+    // Calculate where peripheral space starts in terms of 2MB blocks
+    // Peripheral base is 0x3F000000
+    // 0x3F000000 / 0x200000 = 504
+    const PERIPHERAL_BLOCK_START: usize = 504;
+
+    // Fill L2 table with 2MB block descriptors (covers 0 - 1GB)
+    for i in 0..512 {
+        let block_addr = (i as u64) * BLOCK_SIZE_2MB;
+
+        let entry = if i >= PERIPHERAL_BLOCK_START {
+            // Device memory for peripherals (non-cacheable, non-bufferable)
+            block_addr
+                | PTE_VALID
+                | PTE_BLOCK
+                | (MAIR_IDX_DEVICE << PTE_ATTR_IDX_SHIFT)
+                | PTE_AF
+                | PTE_AP_RW
+                | PTE_UXN  // Don't execute from device memory
+        } else {
+            // Normal cacheable memory for RAM
+            block_addr
+                | PTE_VALID
+                | PTE_BLOCK
+                | (MAIR_IDX_NORMAL << PTE_ATTR_IDX_SHIFT)
+                | PTE_AF
+                | PTE_AP_RW
+                | PTE_SH_INNER  // Inner shareable for cacheability
+        };
+
+        MMU_L2_TABLE.entries[i] = entry;
+    }
+
+    // L1 table entry 0 points to L2 table (covers first 1GB)
+    let l2_addr = &MMU_L2_TABLE as *const _ as u64;
+    MMU_L1_TABLE.entries[0] = l2_addr | PTE_VALID | PTE_TABLE;
+
+    // Entries 1-3 for 1GB-4GB range - mark as device memory (1GB blocks)
+    // This covers any additional peripheral ranges
+    for i in 1..4 {
+        let block_addr = (i as u64) * (1024 * 1024 * 1024); // 1GB per entry
+        MMU_L1_TABLE.entries[i] = block_addr
+            | PTE_VALID
+            | PTE_BLOCK
+            | (MAIR_IDX_DEVICE << PTE_ATTR_IDX_SHIFT)
+            | PTE_AF
+            | PTE_AP_RW
+            | PTE_UXN;
+    }
+
+    // Data synchronization barrier - ensure page tables are written
+    core::arch::asm!("dsb sy");
+
+    // Set MAIR_EL1 (Memory Attribute Indirection Register)
+    core::arch::asm!("msr mair_el1, {}", in(reg) MAIR_VALUE);
+
+    // Set TCR_EL1 (Translation Control Register)
+    // T0SZ = 32: 32-bit address space (4GB)
+    // IRGN0 = 1: Inner write-back, write-allocate
+    // ORGN0 = 1: Outer write-back, write-allocate
+    // SH0 = 3: Inner shareable
+    // TG0 = 0: 4KB granule
+    // IPS = 0: 32-bit physical address
+    let tcr: u64 = (32 << 0)   // T0SZ = 32
+        | (1 << 8)    // IRGN0 = write-back write-allocate
+        | (1 << 10)   // ORGN0 = write-back write-allocate
+        | (3 << 12)   // SH0 = inner shareable
+        | (0 << 14);  // TG0 = 4KB granule
+    core::arch::asm!("msr tcr_el1, {}", in(reg) tcr);
+
+    // Set TTBR0_EL1 (Translation Table Base Register)
+    let l1_addr = &MMU_L1_TABLE as *const _ as u64;
+    core::arch::asm!("msr ttbr0_el1, {}", in(reg) l1_addr);
+
+    // Instruction barrier
+    core::arch::asm!("isb");
+
+    // Invalidate all TLB entries
+    core::arch::asm!("tlbi vmalle1");
+    core::arch::asm!("dsb sy");
+    core::arch::asm!("isb");
+
+    // Now enable MMU and D-cache in SCTLR_EL1
+    let mut sctlr: u64;
+    core::arch::asm!("mrs {}, sctlr_el1", out(reg) sctlr);
+    sctlr |= 1 << 0;   // M = MMU enable
+    sctlr |= 1 << 2;   // C = D-cache enable
+    sctlr |= 1 << 12;  // I = I-cache enable
+    core::arch::asm!("msr sctlr_el1, {}", in(reg) sctlr);
+
+    // Final instruction barrier
+    core::arch::asm!("isb");
+}
+
+// ============================================================================
 // GPIO Configuration
 // ============================================================================
 
 fn configure_gpio_for_dpi() {
     const ALT2: u32 = 0b110;
+
+    // GPIO 0-9: All ALT2 for DPI (GPFSEL0)
     let gpfsel0_val: u32 = (ALT2 << 0) | (ALT2 << 3) | (ALT2 << 6) | (ALT2 << 9) |
         (ALT2 << 12) | (ALT2 << 15) | (ALT2 << 18) | (ALT2 << 21) |
         (ALT2 << 24) | (ALT2 << 27);
+
+    // GPIO 10-19: All ALT2 for DPI (GPFSEL1)
     let gpfsel1_val: u32 = (ALT2 << 0) | (ALT2 << 3) | (ALT2 << 6) | (ALT2 << 9) |
         (ALT2 << 12) | (ALT2 << 15) | (ALT2 << 18) | (ALT2 << 21) |
         (ALT2 << 24) | (ALT2 << 27);
-    let gpfsel2_current = mmio_read(GPFSEL2);
-    let gpfsel2_val: u32 = (ALT2 << 0) | (ALT2 << 3);
+
+    // GPIO 20-27: All ALT2 for DPI (GPFSEL2) - CRITICAL FOR RED CHANNEL!
+    // 24-bit DPI mode uses GPIO 20-27 for RED[7:0]
+    let gpfsel2_val: u32 = (ALT2 << 0) | (ALT2 << 3) | (ALT2 << 6) | (ALT2 << 9) |
+        (ALT2 << 12) | (ALT2 << 15) | (ALT2 << 18) | (ALT2 << 21);
+
     mmio_write(GPFSEL0, gpfsel0_val);
     mmio_write(GPFSEL1, gpfsel1_val);
-    mmio_write(GPFSEL2, (gpfsel2_current & 0xFFFFFFC0) | gpfsel2_val);
+    mmio_write(GPFSEL2, gpfsel2_val);
+
+    // Disable pull-up/down on all DPI pins (GPIO 0-27)
     mmio_write(GPPUD, 0);
-    mmio_write(GPPUDCLK0, 0x003F_FFFF);
+    delay_us(150);
+    mmio_write(GPPUDCLK0, 0x0FFF_FFFF);  // GPIO 0-27
+    delay_us(150);
     mmio_write(GPPUD, 0);
     mmio_write(GPPUDCLK0, 0);
 }
@@ -615,41 +820,128 @@ impl Framebuffer {
         self.fill_rect(0, 0, self.width, self.height, color);
     }
 
-    fn blit_gb_screen_dmg(&self, pal_data: &[u8]) {
-        for y in 0..GB_HEIGHT {
-            for x in 0..GB_WIDTH {
-                let pal_idx = pal_data[y * GB_WIDTH + x] as usize;
-                let color = if pal_idx < 4 { GB_PALETTE[pal_idx] } else { BLACK };
-                let sx = GB_OFFSET_X + x * GB_SCALE;
-                let sy = GB_OFFSET_Y + y * GB_SCALE;
-                for dy in 0..GB_SCALE {
-                    for dx in 0..GB_SCALE {
-                        self.put_pixel((sx + dx) as u32, (sy + dy) as u32, color);
-                    }
-                }
-            }
-        }
-    }
-
+    #[inline(always)]
     fn blit_gb_screen_gbc(&self, rgb_data: &[u8]) {
+        // Temp buffer for one scaled scanline (320 pixels)
+        let mut scanline = [0u32; GB_WIDTH * GB_SCALE];
+
+        let base = self.addr as *mut u32;
+        let pitch_words = (self.pitch / 4) as usize;
+
         for y in 0..GB_HEIGHT {
+            let src_row = y * GB_WIDTH * 3;
+
+            // Build scaled scanline in temp buffer
             for x in 0..GB_WIDTH {
-                let idx = (y * GB_WIDTH + x) * 3;
-                let r = rgb_data[idx] as u32;
-                let g = rgb_data[idx + 1] as u32;
-                let b = rgb_data[idx + 2] as u32;
-                let color = 0xFF000000 | (r << 16) | (g << 8) | b;
-                let sx = GB_OFFSET_X + x * GB_SCALE;
-                let sy = GB_OFFSET_Y + y * GB_SCALE;
-                for dy in 0..GB_SCALE {
-                    for dx in 0..GB_SCALE {
-                        self.put_pixel((sx + dx) as u32, (sy + dy) as u32, color);
-                    }
+                let idx = src_row + x * 3;
+                let color = 0xFF000000
+                    | ((rgb_data[idx] as u32) << 16)
+                    | ((rgb_data[idx + 1] as u32) << 8)
+                    | (rgb_data[idx + 2] as u32);
+
+                scanline[x * 2] = color;
+                scanline[x * 2 + 1] = color;
+            }
+
+            // Copy scanline twice for 2x vertical scaling
+            let dst_y = GB_OFFSET_Y + y * GB_SCALE;
+            unsafe {
+                let row0 = base.add(dst_y * pitch_words + GB_OFFSET_X);
+                let row1 = base.add((dst_y + 1) * pitch_words + GB_OFFSET_X);
+                core::ptr::copy_nonoverlapping(scanline.as_ptr(), row0, scanline.len());
+                core::ptr::copy_nonoverlapping(scanline.as_ptr(), row1, scanline.len());
+            }
+        }
+
+        // Data synchronization barrier to ensure writes complete before GPU reads
+        unsafe { core::arch::asm!("dsb sy"); }
+    }
+
+    /// Optimized GBC blit - writes directly to framebuffer with minimal overhead
+    /// Uses 64-bit writes where possible for better memory bandwidth
+    #[inline(always)]
+    fn blit_gb_screen_gbc_fast(&self, rgb_data: &[u8]) {
+        let base = self.addr as *mut u64;
+        let pitch_qwords = (self.pitch / 8) as usize;
+
+        for y in 0..GB_HEIGHT {
+            let src_row = y * GB_WIDTH * 3;
+            let dst_y = GB_OFFSET_Y + y * GB_SCALE;
+            let row0_base = dst_y * pitch_qwords + (GB_OFFSET_X / 2);
+            let row1_base = (dst_y + 1) * pitch_qwords + (GB_OFFSET_X / 2);
+
+            // Process 2 source pixels at a time -> 4 destination pixels -> 2 qwords
+            for x in (0..GB_WIDTH).step_by(2) {
+                let idx0 = src_row + x * 3;
+                let idx1 = src_row + (x + 1) * 3;
+
+                // Convert RGB to ARGB for both pixels
+                let color0 = 0xFF000000
+                    | ((rgb_data[idx0] as u32) << 16)
+                    | ((rgb_data[idx0 + 1] as u32) << 8)
+                    | (rgb_data[idx0 + 2] as u32);
+
+                let color1 = 0xFF000000
+                    | ((rgb_data[idx1] as u32) << 16)
+                    | ((rgb_data[idx1 + 1] as u32) << 8)
+                    | (rgb_data[idx1 + 2] as u32);
+
+                // Pack into 64-bit values (2 pixels each)
+                let qword0 = (color0 as u64) | ((color0 as u64) << 32); // pixel 0 doubled
+                let qword1 = (color1 as u64) | ((color1 as u64) << 32); // pixel 1 doubled
+
+                let dst_x = x; // destination offset in qwords
+
+                unsafe {
+                    // Write to both rows simultaneously
+                    let row0_ptr = base.add(row0_base + dst_x);
+                    let row1_ptr = base.add(row1_base + dst_x);
+
+                    core::ptr::write_volatile(row0_ptr, qword0);
+                    core::ptr::write_volatile(row0_ptr.add(1), qword1);
+                    core::ptr::write_volatile(row1_ptr, qword0);
+                    core::ptr::write_volatile(row1_ptr.add(1), qword1);
                 }
             }
         }
+
+        // Data synchronization barrier
+        unsafe { core::arch::asm!("dsb sy"); }
     }
 
+    #[inline(always)]
+    fn blit_gb_screen_dmg(&self, pal_data: &[u8]) {
+        let mut scanline = [0u32; GB_WIDTH * GB_SCALE];
+
+        let base = self.addr as *mut u32;
+        let pitch_words = (self.pitch / 4) as usize;
+
+        for y in 0..GB_HEIGHT {
+            let src_row = y * GB_WIDTH;
+
+            // Build scaled scanline
+            for x in 0..GB_WIDTH {
+                let pal_idx = pal_data[src_row + x] as usize;
+                let color = if pal_idx < 4 { GB_PALETTE[pal_idx] } else { BLACK };
+                scanline[x * 2] = color;
+                scanline[x * 2 + 1] = color;
+            }
+
+            // Copy twice for vertical scaling
+            let dst_y = GB_OFFSET_Y + y * GB_SCALE;
+            unsafe {
+                let row0 = base.add(dst_y * pitch_words + GB_OFFSET_X);
+                let row1 = base.add((dst_y + 1) * pitch_words + GB_OFFSET_X);
+                core::ptr::copy_nonoverlapping(scanline.as_ptr(), row0, scanline.len());
+                core::ptr::copy_nonoverlapping(scanline.as_ptr(), row1, scanline.len());
+            }
+        }
+
+        // Data synchronization barrier to ensure writes complete before GPU reads
+        unsafe { core::arch::asm!("dsb sy"); }
+    }
+
+    #[inline(always)]
     fn draw_gb_border(&self, color: u32) {
         let border = 4;
         let x = GB_OFFSET_X as u32 - border;
@@ -1654,7 +1946,7 @@ impl UsbHost {
         }
 
         let mut received = 0usize;
-        let timeout_us = if ep_type == HCCHAR_EPTYPE_CTRL { 500_000 } else { 5_000 };
+        let timeout_us = if ep_type == HCCHAR_EPTYPE_CTRL { 500_000 } else { 500 };  // was 5_000
         let start = micros();
 
         loop {
@@ -1867,45 +2159,30 @@ impl UsbHost {
 static mut USB_HOST: UsbHost = UsbHost::new();
 static mut BUTTON_STATE: GpiButtonState = GpiButtonState { current: 0, previous: 0 };
 static mut USB_INITIALIZED: bool = false;
-
-/// Poll USB input and update button state
+/// Poll USB input and update button state - OPTIMIZED
 fn poll_usb_input() {
     unsafe {
         if !USB_INITIALIZED { return; }
 
-        // Poll up to 4 times for better responsiveness
-        for _ in 0..4 {
-            let mut report = Xbox360InputReport::default();
-            match USB_HOST.read_input(&mut report) {
-                Ok(true) => {
-                    BUTTON_STATE.update_from_xbox(&report);
-                    break;
-                }
-                Ok(false) => { delay_us(500); }
-                Err(_) => { break; }
-            }
+        // Single non-blocking poll - no retry loop
+        let mut report = Xbox360InputReport::default();
+        if let Ok(true) = USB_HOST.read_input(&mut report) {
+            BUTTON_STATE.update_from_xbox(&report);
         }
+        // NAK/timeout = no new data, that's fine, use last state
     }
 }
 
-/// Get current button state
-fn get_buttons() -> u16 {
-    unsafe { BUTTON_STATE.current }
-}
+fn poll_usb_input_if_time(deadline_us: u32) {
+    if micros() > deadline_us { return; } // Already behind, skip USB
 
-/// Check if button was just pressed this frame
-fn button_just_pressed(button: u16) -> bool {
-    unsafe { BUTTON_STATE.just_pressed(button) }
-}
-
-/// Check if button was just released this frame
-fn button_just_released(button: u16) -> bool {
-    unsafe { BUTTON_STATE.just_released(button) }
-}
-
-/// Check if button is currently held
-fn button_pressed(button: u16) -> bool {
-    unsafe { BUTTON_STATE.is_pressed(button) }
+    unsafe {
+        if !USB_INITIALIZED { return; }
+        let mut report = Xbox360InputReport::default();
+        if let Ok(true) = USB_HOST.read_input(&mut report) {
+            BUTTON_STATE.update_from_xbox(&report);
+        }
+    }
 }
 
 // ============================================================================
@@ -2012,55 +2289,39 @@ fn select_rom(fb: &Framebuffer, fs: &mut Fat32) -> Option<usize> {
     browser.draw(fb, fs);
 
     loop {
+        // Use Core 0 USB polling (Core 1 hasn't taken ownership yet)
         poll_usb_input();
 
         let mut needs_redraw = false;
 
-        if button_just_pressed(BTN_UP) {
-            browser.move_up();
-            needs_redraw = true;
-        }
-        if button_just_pressed(BTN_DOWN) {
-            browser.move_down();
-            needs_redraw = true;
-        }
-
-        if button_just_pressed(BTN_A) {
-            // Debug: show we detected A press before returning
-            draw_string(fb, 10, 460, "A pressed! Returning...", YELLOW, DARK_BLUE);
-            delay_ms(500);
-            return Some(browser.get_selection());
+        // Use the local BUTTON_STATE (Core 0's copy)
+        unsafe {
+            if BUTTON_STATE.just_pressed(BTN_UP) {
+                browser.move_up();
+                needs_redraw = true;
+            }
+            if BUTTON_STATE.just_pressed(BTN_DOWN) {
+                browser.move_down();
+                needs_redraw = true;
+            }
+            if BUTTON_STATE.just_pressed(BTN_A) {
+                return Some(browser.get_selection());
+            }
         }
 
         if needs_redraw {
             browser.draw(fb, fs);
         }
 
-        delay_ms(8);
+        delay_ms(16);
     }
 }
 
 /// Load ROM at given index into heap-allocated Vec
 /// Returns the ROM data as a Vec if successful
 fn load_rom(fb: &Framebuffer, fs: &mut Fat32, index: usize) -> Option<Vec<u8>> {
-    draw_string(fb, 10, 130, "load_rom: entered", WHITE, DARK_BLUE);
-
-    // Test 1KB allocation right here
-    draw_string(fb, 10, 150, "Quick 1KB test...", WHITE, DARK_BLUE);
-    let test_layout = Layout::from_size_align(1024, 8).unwrap();
-    let test_ptr = unsafe { heap_alloc::alloc(test_layout) };
-    if test_ptr.is_null() {
-        draw_string(fb, 150, 150, "FAIL", RED, DARK_BLUE);
-        return None;
-    }
-    draw_string(fb, 150, 150, "OK", GREEN, DARK_BLUE);
-    unsafe { heap_alloc::dealloc(test_ptr, test_layout); }
-
-    draw_string(fb, 10, 170, "Finding ROM...", WHITE, DARK_BLUE);
-
     let (cluster, size) = match fs.find_rom(index) {
         Some(info) => {
-            draw_string(fb, 150, 170, "OK", GREEN, DARK_BLUE);
             info
         }
         None => {
@@ -2071,115 +2332,24 @@ fn load_rom(fb: &Framebuffer, fs: &mut Fat32, index: usize) -> Option<Vec<u8>> {
 
     let rom_size = size as usize;
 
-    // Show ROM size
-    let size_kb = rom_size / 1024;
-    draw_string(fb, 10, 190, "Size KB:", WHITE, DARK_BLUE);
-    let d0 = ((size_kb / 1000) % 10) as u8;
-    let d1 = ((size_kb / 100) % 10) as u8;
-    let d2 = ((size_kb / 10) % 10) as u8;
-    let d3 = (size_kb % 10) as u8;
-    draw_char(fb, 80, 190, (b'0' + d0) as char, GREEN, DARK_BLUE);
-    draw_char(fb, 88, 190, (b'0' + d1) as char, GREEN, DARK_BLUE);
-    draw_char(fb, 96, 190, (b'0' + d2) as char, GREEN, DARK_BLUE);
-    draw_char(fb, 104, 190, (b'0' + d3) as char, GREEN, DARK_BLUE);
-
     if rom_size > MAX_ROM_SIZE {
         draw_string(fb, 10, 210, "ROM too large!", RED, DARK_BLUE);
         return None;
     }
 
-    // Use RAW ALLOCATION - bypass Vec's broken grow machinery
-    draw_string(fb, 10, 210, "Testing alloc sizes...", WHITE, DARK_BLUE);
-    delay_ms(100);
-
-    // Test 64KB first
-    draw_string(fb, 10, 230, "64KB...", WHITE, DARK_BLUE);
-    let test_layout = Layout::from_size_align(64 * 1024, 8).unwrap();
-    let test_ptr = unsafe { heap_alloc::alloc(test_layout) };
-    if test_ptr.is_null() {
-        draw_string(fb, 70, 230, "FAIL", RED, DARK_BLUE);
-        return None;
-    }
-    draw_string(fb, 70, 230, "OK", GREEN, DARK_BLUE);
-    unsafe { heap_alloc::dealloc(test_ptr, test_layout); }
-
-    // Test 256KB
-    draw_string(fb, 110, 230, "256KB...", WHITE, DARK_BLUE);
-    let test_layout = Layout::from_size_align(256 * 1024, 8).unwrap();
-    let test_ptr = unsafe { heap_alloc::alloc(test_layout) };
-    if test_ptr.is_null() {
-        draw_string(fb, 180, 230, "FAIL", RED, DARK_BLUE);
-        return None;
-    }
-    draw_string(fb, 180, 230, "OK", GREEN, DARK_BLUE);
-    unsafe { heap_alloc::dealloc(test_ptr, test_layout); }
-
-    // Test 1MB
-    draw_string(fb, 220, 230, "1MB...", WHITE, DARK_BLUE);
-    let test_layout = Layout::from_size_align(1024 * 1024, 8).unwrap();
-    let test_ptr = unsafe { heap_alloc::alloc(test_layout) };
-    if test_ptr.is_null() {
-        draw_string(fb, 270, 230, "FAIL", RED, DARK_BLUE);
-        return None;
-    }
-    draw_string(fb, 270, 230, "OK", GREEN, DARK_BLUE);
-    unsafe { heap_alloc::dealloc(test_ptr, test_layout); }
-
-    // Test 2MB
-    draw_string(fb, 310, 230, "2MB...", WHITE, DARK_BLUE);
-    let test_layout = Layout::from_size_align(2 * 1024 * 1024, 8).unwrap();
-    let test_ptr = unsafe { heap_alloc::alloc(test_layout) };
-    if test_ptr.is_null() {
-        draw_string(fb, 360, 230, "FAIL", RED, DARK_BLUE);
-        return None;
-    }
-    draw_string(fb, 360, 230, "OK", GREEN, DARK_BLUE);
-    unsafe { heap_alloc::dealloc(test_ptr, test_layout); }
-
-    draw_string(fb, 400, 230, "ALL OK!", GREEN, DARK_BLUE);
-    delay_ms(500);
-
     // Now allocate actual ROM size
-    draw_string(fb, 10, 250, "ROM alloc:", WHITE, DARK_BLUE);
     let layout = match Layout::from_size_align(rom_size, 8) {
         Ok(l) => {
-            draw_string(fb, 100, 250, "layout OK", GREEN, DARK_BLUE);
             l
         }
         Err(_) => {
-            draw_string(fb, 100, 250, "layout FAIL", RED, DARK_BLUE);
             return None;
         }
     };
-    delay_ms(100);
-
-    draw_string(fb, 10, 270, "Calling alloc...", WHITE, DARK_BLUE);
-    draw_string(fb, 150, 270, "NOW", YELLOW, DARK_BLUE);
-    delay_ms(100);
-
-    // Enable allocator debug to see if it gets called
-    enable_alloc_debug(fb.addr as usize, 50);
 
     let raw_ptr = unsafe { heap_alloc::alloc(layout) };
 
-    disable_alloc_debug();
-
-    draw_string(fb, 200, 270, "DONE", CYAN, DARK_BLUE);
-
-    if raw_ptr.is_null() {
-        draw_string(fb, 10, 290, "Alloc returned NULL!", RED, DARK_BLUE);
-        return None;
-    }
-
-    draw_string(fb, 10, 290, "Alloc OK!", GREEN, DARK_BLUE);
-
-    // Create mutable slice
-    draw_string(fb, 10, 310, "Creating slice...", WHITE, DARK_BLUE);
     let rom_buffer = unsafe { core::slice::from_raw_parts_mut(raw_ptr, rom_size) };
-    draw_string(fb, 180, 310, "OK", GREEN, DARK_BLUE);
-
-    draw_string(fb, 10, 330, "Reading from SD...", WHITE, DARK_BLUE);
-    delay_ms(100);
 
     match fs.read_file(cluster, size, rom_buffer) {
         Ok(bytes_read) => {
@@ -2188,24 +2358,13 @@ fn load_rom(fb: &Framebuffer, fs: &mut Fat32, index: usize) -> Option<Vec<u8>> {
                 unsafe { heap_alloc::dealloc(raw_ptr, layout); }
                 return None;
             }
-
-            draw_string(fb, 200, 330, "OK", GREEN, DARK_BLUE);
-
-            // Convert raw allocation to Vec using from_raw_parts
-            draw_string(fb, 10, 350, "Creating Vec...", WHITE, DARK_BLUE);
             let rom_data = unsafe {
                 Vec::from_raw_parts(raw_ptr, bytes_read, rom_size)
             };
-            draw_string(fb, 180, 350, "OK", GREEN, DARK_BLUE);
-
-            draw_string(fb, 10, 370, "ROM loaded!", GREEN, DARK_BLUE);
-            delay_ms(500);
-
             Some(rom_data)
         }
         Err(e) => {
             draw_string(fb, 10, 350, "Read failed!", RED, DARK_BLUE);
-            draw_string(fb, 10, 370, e, RED, DARK_BLUE);
             unsafe { heap_alloc::dealloc(raw_ptr, layout); }
             None
         }
@@ -2216,50 +2375,114 @@ fn load_rom(fb: &Framebuffer, fs: &mut Fat32, index: usize) -> Option<Vec<u8>> {
 // Emulator Loop - Never returns (matches x86 architecture)
 // ============================================================================
 
-fn run_emulator(fb: &Framebuffer, rom_data: Vec<u8>) -> ! {
-    draw_string(fb, 200, 240, "Creating Device...", WHITE, DARK_BLUE);
-    delay_ms(100);
+/// Frame timing statistics for debugging performance
+struct FrameStats {
+    emu_time_us: u32,
+    render_time_us: u32,
+    usb_time_us: u32,
+    total_time_us: u32,
+    frame_count: u32,
+}
 
-    let mut device = match Device::new_cgb(rom_data, false) {
-        Ok(d) => {
-            draw_string(fb, 200, 260, "Device OK!", GREEN, DARK_BLUE);
-            delay_ms(500);
-            d
+impl FrameStats {
+    const fn new() -> Self {
+        Self {
+            emu_time_us: 0,
+            render_time_us: 0,
+            usb_time_us: 0,
+            total_time_us: 0,
+            frame_count: 0,
         }
+    }
+}
+
+fn run_emulator(fb: &Framebuffer, rom_data: Vec<u8>) -> ! {
+    let mut device = match Device::new_cgb(rom_data, true) {
+        Ok(d) => d,
         Err(e) => {
             fb.clear(RED);
             draw_string(fb, 100, 200, "Emulator init failed!", WHITE, RED);
-            draw_string(fb, 100, 220, e, WHITE, RED);
             loop { unsafe { core::arch::asm!("wfe"); } }
         }
     };
 
-    draw_string(fb, 200, 280, "Starting game!", CYAN, DARK_BLUE);
-    delay_ms(500);
+    // Initialize MMU and enable D-cache for emulation performance
+    unsafe { init_mmu(); }
 
-    fb.clear(BLACK);
+    // Verify caches are enabled
+    let (icache, dcache) = check_caches();
+
     fb.draw_gb_border(GRAY);
 
-    let mut last_frame_time = micros();
+    // Show cache status briefly (top-right corner, outside game area)
+    let status_x = 500u32;
+    let status_y = 10u32;
 
+    // Cache status
+    let cache_msg = if dcache && icache {
+        "Cache: I+D"
+    } else if icache {
+        "Cache: I only!"
+    } else if dcache {
+        "Cache: D only!"
+    } else {
+        "Cache: NONE!"
+    };
+    draw_string(fb, status_x, status_y, cache_msg,
+                if dcache && icache { GREEN } else { RED }, BLACK);
+
+    // Framebuffer address (helps debug MMU mapping issues)
+    let fb_addr = fb.addr;
+    let fb_block = fb_addr / (2 * 1024 * 1024); // Which 2MB MMU block?
+    let _ = write!(
+        &mut StringWriter::new(fb, status_x, status_y + 12, CYAN, BLACK),
+        "FB:{:08X}", fb_addr
+    );
+    let _ = write!(
+        &mut StringWriter::new(fb, status_x, status_y + 24,
+                               if fb_block < 504 { GREEN } else { YELLOW }, BLACK),
+        "Blk:{}", fb_block
+    );
+
+    let mut stats = FrameStats::new();
+    let mut last_stats_update = micros();
+    let mut skip_render = false; // Toggle with Y button for testing
+
+    // Target ~59.7 fps = 16742 microseconds per frame
+    const TARGET_FRAME_US: u32 = 16742;
     const CYCLES_PER_FRAME: u32 = 70224;
 
+    let mut last_frame_ticks = micros();
+
     loop {
-        // Run one frame of emulation
+        let frame_start = micros();
+
+        // === EMULATION PHASE ===
+        let emu_start = micros();
         let mut cycles: u32 = 0;
         while cycles < CYCLES_PER_FRAME {
             cycles += device.do_cycle();
         }
+        let emu_end = micros();
+        stats.emu_time_us = emu_end.wrapping_sub(emu_start);
 
-        // Render
-        if device.mode() == GbMode::Color {
-            fb.blit_gb_screen_gbc(device.get_gpu_data());
-        } else {
-            fb.blit_gb_screen_dmg(device.get_pal_data());
+        // === RENDER PHASE ===
+        let render_start = micros();
+        if !skip_render && device.check_and_reset_gpu_updated() {
+            if device.mode() == GbMode::Color {
+                fb.blit_gb_screen_gbc(device.get_gpu_data());
+            } else {
+                fb.blit_gb_screen_dmg(device.get_pal_data());
+            }
         }
+        let render_end = micros();
+        stats.render_time_us = render_end.wrapping_sub(render_start);
 
-        // Poll USB input
-        poll_usb_input();
+        // === USB POLLING PHASE ===
+        let usb_start = micros();
+        poll_usb_input_if_time(usb_start);
+        let usb_end = micros();
+        stats.usb_time_us = usb_end.wrapping_sub(usb_start);
 
         // Handle input - map GPi buttons to GameBoy keys
         if button_just_pressed(BTN_RIGHT)  { device.keydown(KeypadKey::Right); }
@@ -2279,16 +2502,313 @@ fn run_emulator(fb: &Framebuffer, rom_data: Vec<u8>) -> ! {
         if button_just_pressed(BTN_SELECT) { device.keydown(KeypadKey::Select); }
         if button_just_released(BTN_SELECT){ device.keyup(KeypadKey::Select); }
 
-        // Frame timing (~59.7 fps)
-        let target_time = last_frame_time.wrapping_add(FRAME_TIME_US);
-        while micros().wrapping_sub(target_time) > 0x80000000 {}
-        last_frame_time = micros();
+        // Y button toggles render skip for testing
+        if button_just_pressed(BTN_Y) {
+            skip_render = !skip_render;
+        }
+
+        let frame_end = micros();
+        stats.total_time_us = frame_end.wrapping_sub(frame_start);
+        stats.frame_count += 1;
+
+        // Update stats display every second
+        if micros().wrapping_sub(last_stats_update) > 1_000_000 {
+            // Draw stats in top-left corner (outside GB screen area)
+            let y_base = 10u32;
+            let bg = BLACK;
+
+            // Clear stats area
+            fb.fill_rect(0, y_base, 150, 70, bg);
+
+            // FPS
+            let fps = if stats.total_time_us > 0 {
+                1_000_000 / stats.total_time_us
+            } else { 0 };
+            let _ = write!(
+                &mut StringWriter::new(fb, 10, y_base,
+                                       if fps >= 55 { GREEN } else if fps >= 30 { YELLOW } else { RED }, bg),
+                "FPS: {}", fps
+            );
+
+            // Emulation time
+            let _ = write!(
+                &mut StringWriter::new(fb, 10, y_base + 12, WHITE, bg),
+                "EMU: {}us", stats.emu_time_us
+            );
+
+            // Render time
+            let _ = write!(
+                &mut StringWriter::new(fb, 10, y_base + 24, WHITE, bg),
+                "GFX: {}us", stats.render_time_us
+            );
+
+            // USB time
+            let _ = write!(
+                &mut StringWriter::new(fb, 10, y_base + 36, WHITE, bg),
+                "USB: {}us", stats.usb_time_us
+            );
+
+            // Total time
+            let _ = write!(
+                &mut StringWriter::new(fb, 10, y_base + 48, WHITE, bg),
+                "TOT: {}us", stats.total_time_us
+            );
+
+            // Render skip status (for diagnostic mode)
+            if skip_render {
+                draw_string(fb, 10, y_base + 60, "GFX:SKIP", YELLOW, bg);
+            }
+
+            last_stats_update = micros();
+        }
+
+        // Frame timing - only wait if we're ahead of schedule
+        let target_ticks = last_frame_ticks.wrapping_add(TARGET_FRAME_US);
+        while micros().wrapping_sub(target_ticks) > 0x8000_0000 {
+            unsafe { core::arch::asm!("wfe"); }
+        }
+        last_frame_ticks = target_ticks;
+    }
+}
+
+fn run_emulator_multicore(fb: &Framebuffer, rom_data: Vec<u8>) -> ! {
+    let mut device = match Device::new_cgb(rom_data, true) {
+        Ok(d) => d,
+        Err(_) => {
+            fb.clear(RED);
+            draw_string(fb, 100, 200, "Emulator init failed!", WHITE, RED);
+            loop { unsafe { core::arch::asm!("wfe"); } }
+        }
+    };
+
+    // Initialize MMU for D-cache
+    unsafe { init_mmu(); }
+
+    fb.draw_gb_border(GRAY);
+
+    const CYCLES_PER_FRAME: u32 = 70224;
+    const TARGET_FRAME_US: u32 = 16742;
+
+    let mut last_frame_ticks = micros();
+
+    loop {
+        // =====================================================================
+        // Emulation (Core 0)
+        // =====================================================================
+        let mut cycles: u32 = 0;
+        while cycles < CYCLES_PER_FRAME {
+            cycles += device.do_cycle();
+        }
+
+        // =====================================================================
+        // Graphics (Signal Core 2 - non-blocking!)
+        // =====================================================================
+        if device.check_and_reset_gpu_updated() {
+            let is_color = device.mode() == GbMode::Color;
+            let screen_ptr = if is_color {
+                device.get_gpu_data().as_ptr()
+            } else {
+                device.get_pal_data().as_ptr()
+            };
+
+            // Returns immediately - Core 2 blits in parallel
+            multicore::request_blit(screen_ptr, is_color);
+        }
+
+        // =====================================================================
+        // Input (from Core 1's shared state - instant!)
+        // =====================================================================
+        // NOTE: We use multicore:: functions, NOT the local BUTTON_STATE!
+
+        if multicore::button_just_pressed(BTN_RIGHT)  { device.keydown(KeypadKey::Right); }
+        if multicore::button_just_released(BTN_RIGHT) { device.keyup(KeypadKey::Right); }
+        if multicore::button_just_pressed(BTN_LEFT)   { device.keydown(KeypadKey::Left); }
+        if multicore::button_just_released(BTN_LEFT)  { device.keyup(KeypadKey::Left); }
+        if multicore::button_just_pressed(BTN_UP)     { device.keydown(KeypadKey::Up); }
+        if multicore::button_just_released(BTN_UP)    { device.keyup(KeypadKey::Up); }
+        if multicore::button_just_pressed(BTN_DOWN)   { device.keydown(KeypadKey::Down); }
+        if multicore::button_just_released(BTN_DOWN)  { device.keyup(KeypadKey::Down); }
+        if multicore::button_just_pressed(BTN_A)      { device.keydown(KeypadKey::A); }
+        if multicore::button_just_released(BTN_A)     { device.keyup(KeypadKey::A); }
+        if multicore::button_just_pressed(BTN_B)      { device.keydown(KeypadKey::B); }
+        if multicore::button_just_released(BTN_B)     { device.keyup(KeypadKey::B); }
+        if multicore::button_just_pressed(BTN_START)  { device.keydown(KeypadKey::Start); }
+        if multicore::button_just_released(BTN_START) { device.keyup(KeypadKey::Start); }
+        if multicore::button_just_pressed(BTN_SELECT) { device.keydown(KeypadKey::Select); }
+        if multicore::button_just_released(BTN_SELECT){ device.keyup(KeypadKey::Select); }
+
+        // =====================================================================
+        // Frame timing
+        // =====================================================================
+        let target_ticks = last_frame_ticks.wrapping_add(TARGET_FRAME_US);
+        while micros().wrapping_sub(target_ticks) > 0x8000_0000 {
+            core::hint::spin_loop();
+        }
+        last_frame_ticks = target_ticks;
     }
 }
 
 // ============================================================================
 // Main Entry Point
 // ============================================================================
+#[no_mangle]
+pub unsafe extern "C" fn core1_usb_entry() -> ! {
+    // Signal that we're running
+    multicore::CORE1_RUNNING.store(true, core::sync::atomic::Ordering::Release);
+
+    // Wait for USB ownership handoff from Core 0
+    while !multicore::USB_OWNED_BY_CORE1.load(core::sync::atomic::Ordering::Acquire) {
+        core::arch::asm!("wfe");
+    }
+
+    // Now we exclusively own USB_HOST - Core 0 will never touch it again
+    let usb = &mut USB_HOST;
+
+    loop {
+        if USB_INITIALIZED {
+            let mut report = Xbox360InputReport::default();
+
+            if let Ok(true) = usb.read_input(&mut report) {
+                // Convert Xbox report to button bits
+                let mut buttons: u16 = 0;
+
+                if report.buttons_low & Xbox360InputReport::DPAD_UP != 0    { buttons |= BTN_UP; }
+                if report.buttons_low & Xbox360InputReport::DPAD_DOWN != 0  { buttons |= BTN_DOWN; }
+                if report.buttons_low & Xbox360InputReport::DPAD_LEFT != 0  { buttons |= BTN_LEFT; }
+                if report.buttons_low & Xbox360InputReport::DPAD_RIGHT != 0 { buttons |= BTN_RIGHT; }
+                if report.buttons_high & Xbox360InputReport::A != 0         { buttons |= BTN_A; }
+                if report.buttons_high & Xbox360InputReport::B != 0         { buttons |= BTN_B; }
+                if report.buttons_high & Xbox360InputReport::X != 0         { buttons |= BTN_X; }
+                if report.buttons_high & Xbox360InputReport::Y != 0         { buttons |= BTN_Y; }
+                if report.buttons_low & Xbox360InputReport::START != 0      { buttons |= BTN_START; }
+                if report.buttons_low & Xbox360InputReport::BACK != 0       { buttons |= BTN_SELECT; }
+                if report.buttons_high & Xbox360InputReport::LB != 0        { buttons |= BTN_L; }
+                if report.buttons_high & Xbox360InputReport::RB != 0        { buttons |= BTN_R; }
+                if report.buttons_high & Xbox360InputReport::GUIDE != 0     { buttons |= BTN_HOME; }
+
+                // Update shared state (Core 0 reads this)
+                multicore::set_buttons(buttons);
+            }
+        }
+
+        // Small delay - ~120Hz polling is plenty for input
+        // This prevents hammering USB and wasting power
+        for _ in 0..8000 {
+            core::hint::spin_loop();
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core2_gfx_entry() -> ! {
+    use multicore::{
+        CORE2_RUNNING, GFX_FRAME_READY, GFX_BLIT_DONE,
+        FB_ADDR, FB_PITCH, GB_SCREEN_PTR, GB_SCREEN_IS_COLOR,
+        GB_WIDTH, GB_HEIGHT, GB_SCALE, GB_OFFSET_X, GB_OFFSET_Y, GB_PALETTE,
+        dsb, wfe, sev,
+    };
+    use core::sync::atomic::Ordering;
+
+    CORE2_RUNNING.store(true, Ordering::Release);
+
+    loop {
+        // Wait for frame ready signal from Core 0
+        while !GFX_FRAME_READY.load(Ordering::Acquire) {
+            wfe();
+        }
+
+        // Get parameters
+        let fb_addr = FB_ADDR.load(Ordering::Acquire);
+        let fb_pitch = FB_PITCH.load(Ordering::Acquire);
+        let gb_ptr = GB_SCREEN_PTR.load(Ordering::Acquire);
+        let is_color = GB_SCREEN_IS_COLOR.load(Ordering::Acquire);
+
+        if fb_addr != 0 && gb_ptr != 0 {
+            if is_color {
+                // GBC: RGB data, 3 bytes per pixel
+                blit_gbc_core2(fb_addr, fb_pitch, gb_ptr);
+            } else {
+                // DMG: Palette index data, 1 byte per pixel
+                blit_dmg_core2(fb_addr, fb_pitch, gb_ptr);
+            }
+        }
+
+        // Signal completion
+        GFX_FRAME_READY.store(false, Ordering::Release);
+        GFX_BLIT_DONE.store(true, Ordering::Release);
+        dsb();
+        sev(); // Wake Core 0 if it's waiting
+    }
+}
+
+/// GBC screen blit - runs on Core 2
+#[inline(always)]
+unsafe fn blit_gbc_core2(fb_addr: u32, fb_pitch: u32, rgb_ptr: u32) {
+    use multicore::{GB_WIDTH, GB_HEIGHT, GB_SCALE, GB_OFFSET_X, GB_OFFSET_Y};
+
+    let rgb_data = core::slice::from_raw_parts(rgb_ptr as *const u8, GB_WIDTH * GB_HEIGHT * 3);
+    let base = fb_addr as *mut u32;
+    let pitch_words = (fb_pitch / 4) as usize;
+
+    let mut scanline = [0u32; GB_WIDTH * GB_SCALE];
+
+    for y in 0..GB_HEIGHT {
+        let src_row = y * GB_WIDTH * 3;
+
+        // Build scaled scanline
+        for x in 0..GB_WIDTH {
+            let idx = src_row + x * 3;
+            let color = 0xFF000000
+                | ((rgb_data[idx] as u32) << 16)
+                | ((rgb_data[idx + 1] as u32) << 8)
+                | (rgb_data[idx + 2] as u32);
+
+            scanline[x * 2] = color;
+            scanline[x * 2 + 1] = color;
+        }
+
+        // Copy twice for 2x vertical scaling
+        let dst_y = GB_OFFSET_Y + y * GB_SCALE;
+        let row0 = base.add(dst_y * pitch_words + GB_OFFSET_X);
+        let row1 = base.add((dst_y + 1) * pitch_words + GB_OFFSET_X);
+        core::ptr::copy_nonoverlapping(scanline.as_ptr(), row0, scanline.len());
+        core::ptr::copy_nonoverlapping(scanline.as_ptr(), row1, scanline.len());
+    }
+
+    // Ensure writes complete before signaling done
+    core::arch::asm!("dsb sy");
+}
+
+/// DMG screen blit - runs on Core 2
+#[inline(always)]
+unsafe fn blit_dmg_core2(fb_addr: u32, fb_pitch: u32, pal_ptr: u32) {
+    use multicore::{GB_WIDTH, GB_HEIGHT, GB_SCALE, GB_OFFSET_X, GB_OFFSET_Y, GB_PALETTE};
+
+    let pal_data = core::slice::from_raw_parts(pal_ptr as *const u8, GB_WIDTH * GB_HEIGHT);
+    let base = fb_addr as *mut u32;
+    let pitch_words = (fb_pitch / 4) as usize;
+
+    let mut scanline = [0u32; GB_WIDTH * GB_SCALE];
+
+    for y in 0..GB_HEIGHT {
+        let src_row = y * GB_WIDTH;
+
+        for x in 0..GB_WIDTH {
+            let pal_idx = pal_data[src_row + x] as usize;
+            let color = if pal_idx < 4 { GB_PALETTE[pal_idx] } else { 0xFF000000 };
+            scanline[x * 2] = color;
+            scanline[x * 2 + 1] = color;
+        }
+
+        let dst_y = GB_OFFSET_Y + y * GB_SCALE;
+        let row0 = base.add(dst_y * pitch_words + GB_OFFSET_X);
+        let row1 = base.add((dst_y + 1) * pitch_words + GB_OFFSET_X);
+        core::ptr::copy_nonoverlapping(scanline.as_ptr(), row0, scanline.len());
+        core::ptr::copy_nonoverlapping(scanline.as_ptr(), row1, scanline.len());
+    }
+
+    core::arch::asm!("dsb sy");
+}
 
 #[no_mangle]
 pub extern "C" fn boot_main() -> ! {
@@ -2300,24 +2820,16 @@ pub extern "C" fn boot_main() -> ! {
         None => loop { unsafe { core::arch::asm!("wfe"); } }
     };
 
-    // Store framebuffer address globally for debug output
-    ALLOC_DEBUG_FB_ADDR.store(fb.addr as usize, Ordering::Relaxed);
-
     fb.clear(DARK_BLUE);
-
     let mut con = Console::new(&fb, WHITE, DARK_BLUE);
 
-    con.set_color(CYAN, DARK_BLUE);
-    con.println("=== GB-OS for GPi Case 2W ===");
-    con.set_color(RED, DARK_BLUE);
-    con.println("*** DEBUG BUILD v19 ***");
-    con.set_color(WHITE, DARK_BLUE);
+    con.println("=== GB-OS Multi-Core Edition ===");
     con.newline();
 
-    // Initialize USB HID input
-    con.set_color(WHITE, DARK_BLUE);
+    // =========================================================================
+    // Initialize USB on Core 0 (we still own it at this point)
+    // =========================================================================
     con.println("Initializing USB gamepad...");
-
     let usb = unsafe { &mut USB_HOST };
 
     match usb.init() {
@@ -2325,40 +2837,18 @@ pub extern "C" fn boot_main() -> ! {
             con.set_color(GREEN, DARK_BLUE);
             con.println("  USB controller initialized");
 
-            con.set_color(WHITE, DARK_BLUE);
-            con.println("  Waiting for gamepad...");
-
             if usb.wait_for_connection(3000) {
                 delay_ms(150);
-
-                match usb.reset_port() {
-                    Ok(()) => {
+                if let Ok(()) = usb.reset_port() {
+                    if let Ok(()) = usb.enumerate() {
+                        unsafe { USB_INITIALIZED = true; }
                         con.set_color(GREEN, DARK_BLUE);
-                        con.println("  Port reset OK");
-
-                        con.set_color(WHITE, DARK_BLUE);
-                        con.println("  Enumerating device...");
-
-                        match usb.enumerate() {
-                            Ok(()) => {
-                                unsafe { USB_INITIALIZED = true; }
-                                con.set_color(GREEN, DARK_BLUE);
-                                con.println("  Gamepad ready!");
-                            }
-                            Err(e) => {
-                                con.set_color(RED, DARK_BLUE);
-                                let _ = write!(con, "  Enumeration failed: {}\n", e);
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        con.set_color(RED, DARK_BLUE);
-                        let _ = write!(con, "  Port reset failed: {}\n", e);
+                        con.println("  Gamepad enumerated!");
                     }
                 }
             } else {
                 con.set_color(YELLOW, DARK_BLUE);
-                con.println("  No USB device detected");
+                con.println("  No gamepad detected");
             }
         }
         Err(e) => {
@@ -2367,37 +2857,159 @@ pub extern "C" fn boot_main() -> ! {
         }
     }
 
+    {
+        con.set_color(CYAN, DARK_BLUE);
+        con.println("=== Multicore Diagnostic ===");
+
+        // Check exception level
+        let el: u64;
+        unsafe { core::arch::asm!("mrs {}, CurrentEL", out(reg) el); }
+        let _ = write!(con, "Exception Level: EL{}\n", (el >> 2) & 0x3);
+
+        // Check MMU/cache state
+        let sctlr: u64;
+        unsafe { core::arch::asm!("mrs {}, sctlr_el1", out(reg) sctlr); }
+        let _ = write!(con, "MMU:{} I$:{} D$:{}\n",
+                       if sctlr & 1 != 0 { "ON" } else { "off" },
+                       if sctlr & (1<<12) != 0 { "ON" } else { "off" },
+                       if sctlr & (1<<2) != 0 { "ON" } else { "off" });
+
+        // Read spin table addresses
+        unsafe {
+            // Clean/invalidate cache for spin table region
+            for addr in [0xD8usize, 0xE0, 0xE8, 0xF0] {
+                core::arch::asm!("dc civac, {}", in(reg) addr);
+            }
+            core::arch::asm!("dsb sy");
+
+            let c0 = core::ptr::read_volatile(0xD8 as *const u64);
+            let c1 = core::ptr::read_volatile(0xE0 as *const u64);
+            let c2 = core::ptr::read_volatile(0xE8 as *const u64);
+            let c3 = core::ptr::read_volatile(0xF0 as *const u64);
+
+            con.println("Spin table:");
+            let _ = write!(con, " C0[D8]:{:08X}\n", c0 as u32);
+            let _ = write!(con, " C1[E0]:{:08X}\n", c1 as u32);
+            let _ = write!(con, " C2[E8]:{:08X}\n", c2 as u32);
+            let _ = write!(con, " C3[F0]:{:08X}\n", c3 as u32);
+
+            // If all zeros, cores might not be parked there
+            if c1 == 0 && c2 == 0 && c3 == 0 {
+                con.set_color(YELLOW, DARK_BLUE);
+                con.println("All zeros - cores may be");
+                con.println("parked elsewhere or running");
+            }
+        }
+
+        // Try writing a test value and reading it back
+        con.set_color(WHITE, DARK_BLUE);
+        con.println("Write test to 0xE0:");
+        unsafe {
+            let test_val = 0xCAFE_BABE_u64;
+            core::ptr::write_volatile(0xE0 as *mut u64, test_val);
+            core::arch::asm!("dmb sy");
+            core::arch::asm!("dc civac, {}", in(reg) 0xE0usize);
+            core::arch::asm!("dsb sy");
+
+            // Read back (invalidate first)
+            core::arch::asm!("dc ivac, {}", in(reg) 0xE0usize);
+            core::arch::asm!("dsb sy");
+            let rb = core::ptr::read_volatile(0xE0 as *const u64);
+
+            if rb == test_val {
+                con.set_color(GREEN, DARK_BLUE);
+                con.println(" PASS - memory writable");
+            } else {
+                con.set_color(RED, DARK_BLUE);
+                let _ = write!(con, " FAIL: {:016X}\n", rb);
+            }
+
+            // Reset
+            core::ptr::write_volatile(0xE0 as *mut u64, 0);
+            core::arch::asm!("dc civac, {}", in(reg) 0xE0usize);
+            core::arch::asm!("dsb sy");
+        }
+
+        // Show stack addresses from linker
+        con.set_color(WHITE, DARK_BLUE);
+        con.println("Linker symbols:");
+        unsafe {
+            extern "C" {
+                static __core1_stack_top: u8;
+                static __core2_stack_top: u8;
+            }
+            let _ = write!(con, " C1 stk: {:08X}\n", &__core1_stack_top as *const u8 as u32);
+            let _ = write!(con, " C2 stk: {:08X}\n", &__core2_stack_top as *const u8 as u32);
+        }
+
+        con.newline();
+        con.set_color(YELLOW, DARK_BLUE);
+        con.println("Press A to continue...");
+
+        loop {
+            poll_usb_input();
+            unsafe {
+                if BUTTON_STATE.just_pressed(BTN_A) {
+                    break;
+                }
+            }
+            delay_ms(16);
+        }
+    }
+
+    // =========================================================================
+    // Start secondary cores (but don't hand off USB yet!)
+    // =========================================================================
+    con.set_color(WHITE, DARK_BLUE);
+    con.println("Starting secondary cores...");
+
+    // Initialize graphics info for Core 2
+    multicore::init_gfx_core(fb.addr, fb.pitch);
+
+    unsafe {
+        // Start Core 1 - it will wait for USB ownership
+        multicore::start_core(1, core1_usb_entry);
+
+        for _ in 0..100 {
+            if multicore::CORE1_RUNNING.load(core::sync::atomic::Ordering::Acquire) {
+                break;
+            }
+            delay_ms(10);
+        }
+
+        if multicore::CORE1_RUNNING.load(core::sync::atomic::Ordering::Acquire) {
+            con.set_color(GREEN, DARK_BLUE);
+            con.println("  Core 1 (USB): Started (waiting for handoff)");
+        } else {
+            con.set_color(RED, DARK_BLUE);
+            con.println("  Core 1 (USB): Failed to start");
+        }
+
+        // Start Core 2 for graphics
+        multicore::start_core(2, core2_gfx_entry);
+
+        for _ in 0..100 {
+            if multicore::CORE2_RUNNING.load(core::sync::atomic::Ordering::Acquire) {
+                break;
+            }
+            delay_ms(10);
+        }
+
+        if multicore::CORE2_RUNNING.load(core::sync::atomic::Ordering::Acquire) {
+            con.set_color(GREEN, DARK_BLUE);
+            con.println("  Core 2 (GFX): Running");
+        } else {
+            con.set_color(RED, DARK_BLUE);
+            con.println("  Core 2 (GFX): Failed to start");
+        }
+    }
+
+    // =========================================================================
+    // Mount SD and browse ROMs (Core 0 still owns USB here)
+    // =========================================================================
     con.newline();
     con.set_color(WHITE, DARK_BLUE);
     con.println("Mounting SD card...");
-
-    // TEST ALLOC #1: Before Fat32 - with granular debug
-    con.set_color(YELLOW, DARK_BLUE);
-    con.print("Alloc test: ");
-    con.print("1");  // Made it here
-
-    // Create layout manually without any function calls
-    // Layout for 1024 bytes, 8 byte alignment
-    // SAFETY: These values are valid (size > 0, align is power of 2)
-    let test_layout = unsafe { Layout::from_size_align_unchecked(1024, 8) };
-    con.print("2");  // Layout created
-
-    con.print("3");  // About to call alloc
-
-    // Try calling allocator directly
-    let test_ptr = unsafe { ALLOCATOR.alloc(test_layout) };
-
-    con.print("4");  // Returned from alloc
-
-    if test_ptr.is_null() {
-        con.set_color(RED, DARK_BLUE);
-        con.println(" FAIL");
-    } else {
-        con.set_color(GREEN, DARK_BLUE);
-        con.println(" OK");
-        unsafe { ALLOCATOR.dealloc(test_ptr, test_layout); }
-    }
-    con.set_color(WHITE, DARK_BLUE);
 
     let mut fs = Fat32::new();
 
@@ -2409,107 +3021,50 @@ pub extern "C" fn boot_main() -> ! {
         Err(e) => {
             con.set_color(RED, DARK_BLUE);
             let _ = write!(con, "Mount failed: {}\n", e);
-            con.println("Insert SD card with FAT32 partition");
             loop { unsafe { core::arch::asm!("wfe"); } }
         }
     }
 
-    // TEST ALLOC #2: After mount
-    con.set_color(YELLOW, DARK_BLUE);
-    con.print("Post-mount: ");
-    let test_ptr = unsafe { ALLOCATOR.alloc(test_layout) };
-    if test_ptr.is_null() {
-        con.set_color(RED, DARK_BLUE);
-        con.println("FAIL");
-    } else {
-        con.set_color(GREEN, DARK_BLUE);
-        con.println("OK");
-        unsafe { ALLOCATOR.dealloc(test_ptr, test_layout); }
-    }
-    con.set_color(WHITE, DARK_BLUE);
-
     let rom_count = fs.count_roms();
     let _ = write!(con, "Found {} ROM(s)\n", rom_count);
-
-    // TEST ALLOC #3: After count_roms
-    con.set_color(YELLOW, DARK_BLUE);
-    con.print("Post-count: ");
-    let test_ptr = unsafe { ALLOCATOR.alloc(test_layout) };
-    if test_ptr.is_null() {
-        con.set_color(RED, DARK_BLUE);
-        con.println("FAIL");
-    } else {
-        con.set_color(GREEN, DARK_BLUE);
-        con.println("OK");
-        unsafe { ALLOCATOR.dealloc(test_ptr, test_layout); }
-    }
-    con.set_color(WHITE, DARK_BLUE);
 
     if rom_count == 0 {
         con.set_color(YELLOW, DARK_BLUE);
         con.println("No .gb or .gbc files found!");
-        con.println("Place ROMs in SD card root directory");
         loop { unsafe { core::arch::asm!("wfe"); } }
     }
 
-    con.newline();
-    con.println("Starting ROM browser...");
-    con.set_color(YELLOW, DARK_BLUE);
-    con.println("DEBUG: About to call select_rom()");
-    con.set_color(WHITE, DARK_BLUE);
-    delay_ms(1000);
-
-    // Show ROM browser and get selection
+    // ROM browser still uses Core 0 USB polling
     if let Some(rom_index) = select_rom(&fb, &mut fs) {
-        // TEST ALLOC #4: After select_rom
-        fb.clear(DARK_BLUE);
-        draw_string(&fb, 10, 10, "Post-select alloc: ", WHITE, DARK_BLUE);
-        let test_ptr = unsafe { ALLOCATOR.alloc(test_layout) };
-        if test_ptr.is_null() {
-            draw_string(&fb, 180, 10, "FAIL!", RED, DARK_BLUE);
-            loop { delay_ms(1000); }
-        }
-        draw_string(&fb, 180, 10, "OK", GREEN, DARK_BLUE);
-        unsafe { ALLOCATOR.dealloc(test_ptr, test_layout); }
-
-        // Show loading screen with step-by-step debug
-        draw_string(&fb, 10, 30, "STEP 1: Cleared screen", WHITE, DARK_BLUE);
-        draw_string(&fb, 10, 50, "STEP 2: Got ROM index from browser", WHITE, DARK_BLUE);
-        draw_string(&fb, 10, 70, "STEP 3: About to call load_rom", WHITE, DARK_BLUE);
-
-        // Show index
-        let idx_char = (b'0' + (rom_index % 10) as u8) as char;
-        draw_string(&fb, 10, 90, "Index:", WHITE, DARK_BLUE);
-        draw_char(&fb, 70, 90, idx_char, GREEN, DARK_BLUE);
-
-        // Pause to see output
-        draw_string(&fb, 10, 110, "Calling load_rom in 1 sec...", YELLOW, DARK_BLUE);
-        delay_ms(1000);
-
-        // Load selected ROM into heap-allocated Vec
         if let Some(rom_data) = load_rom(&fb, &mut fs, rom_index) {
-            // Clear screen before starting emulator
-            fb.clear(DARK_BLUE);
-            draw_string(&fb, 200, 200, "ROM LOADED!", GREEN, DARK_BLUE);
-            draw_string(&fb, 200, 220, "Starting emulator...", WHITE, DARK_BLUE);
-            delay_ms(1000);
+            fb.clear(BLACK);
 
-            // Run emulator - never returns
-            run_emulator(&fb, rom_data);
-        } else {
-            // ROM load failed - debug info already shown
-            draw_string(&fb, 200, 460, "ROM LOAD FAILED", RED, DARK_BLUE);
-            // Wait forever so we can see the error
-            loop {
-                delay_ms(1000);
+            // =========================================================================
+            // NOW hand off USB to Core 1 before entering emulator
+            // =========================================================================
+            con.set_color(WHITE, DARK_BLUE);
+
+            // Copy current button state to shared state
+            unsafe {
+                multicore::set_buttons(BUTTON_STATE.current);
             }
+
+            // Hand off USB ownership to Core 1
+            multicore::USB_OWNED_BY_CORE1.store(true, core::sync::atomic::Ordering::Release);
+            multicore::dsb();
+            multicore::sev(); // Wake Core 1
+
+            // Small delay to let Core 1 take over
+            delay_ms(10);
+
+            // From this point on, Core 0 MUST NOT touch USB_HOST!
+            // Use multicore::button_* functions instead
+
+            run_emulator_multicore(&fb, rom_data);
         }
     }
 
-    // Halt if we get here (no ROM selected or load failed)
-    loop {
-        unsafe { core::arch::asm!("wfe"); }
-    }
+    loop { unsafe { core::arch::asm!("wfe"); } }
 }
 
 // ============================================================================
@@ -2518,19 +3073,5 @@ pub extern "C" fn boot_main() -> ! {
 
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
-    // Show blue bar for panic
-    let fb_addr = ALLOC_DEBUG_FB_ADDR.load(Ordering::Relaxed);
-    if fb_addr != 0 {
-        unsafe {
-            let pitch = 640 * 4;
-            // Draw thick blue bar from y=0 to y=30
-            for y in 0u32..30 {
-                for x in 0u32..640 {
-                    let offset = (y * pitch + x * 4) as usize;
-                    core::ptr::write_volatile((fb_addr + offset) as *mut u32, 0xFF0000FF);
-                }
-            }
-        }
-    }
     loop { unsafe { core::arch::asm!("wfe"); } }
 }

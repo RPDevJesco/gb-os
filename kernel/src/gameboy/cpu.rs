@@ -2,6 +2,8 @@
 //!
 //! Sharp LR35902 - a Z80 derivative with some differences.
 //! Runs at 4.19 MHz (or 8.38 MHz in CGB double-speed mode).
+//!
+//! OPTIMIZED VERSION: Added #[inline] hints for ARM bare-metal performance.
 
 extern crate alloc;
 
@@ -55,6 +57,7 @@ impl CPU {
     }
 
     /// Execute one instruction cycle
+    #[inline]
     pub fn do_cycle(&mut self) -> u32 {
         self.update_ime();
         let ticks = self.handle_interrupts();
@@ -71,6 +74,7 @@ impl CPU {
         self.mmu.do_cycle(ticks)
     }
 
+    #[inline(always)]
     fn update_ime(&mut self) {
         self.setdi = match self.setdi {
             2 => 1,
@@ -90,6 +94,7 @@ impl CPU {
         };
     }
 
+    #[inline(always)]
     fn handle_interrupts(&mut self) -> u32 {
         if !self.ime && !self.halted {
             return 0;
@@ -123,6 +128,7 @@ impl CPU {
     }
 
     /// Read byte at PC and increment
+    #[inline(always)]
     fn fetchbyte(&mut self) -> u8 {
         let b = self.mmu.rb(self.reg.pc);
         if !self.halt_bug {
@@ -133,6 +139,7 @@ impl CPU {
     }
 
     /// Read word at PC and increment
+    #[inline(always)]
     fn fetchword(&mut self) -> u16 {
         let w = self.mmu.rw(self.reg.pc);
         self.reg.pc = self.reg.pc.wrapping_add(2);
@@ -140,12 +147,14 @@ impl CPU {
     }
 
     /// Push word onto stack
+    #[inline(always)]
     fn push(&mut self, value: u16) {
         self.reg.sp = self.reg.sp.wrapping_sub(2);
         self.mmu.ww(self.reg.sp, value);
     }
 
     /// Pop word from stack
+    #[inline(always)]
     fn pop(&mut self) -> u16 {
         let value = self.mmu.rw(self.reg.sp);
         self.reg.sp = self.reg.sp.wrapping_add(2);
@@ -153,26 +162,31 @@ impl CPU {
     }
 
     /// Read byte from memory
+    #[inline(always)]
     pub fn read_byte(&mut self, addr: u16) -> u8 {
         self.mmu.rb(addr)
     }
 
     /// Write byte to memory
+    #[inline(always)]
     pub fn write_byte(&mut self, addr: u16, value: u8) {
         self.mmu.wb(addr, value);
     }
 
     /// Read word from memory
+    #[inline(always)]
     pub fn read_wide(&mut self, addr: u16) -> u16 {
         self.mmu.rw(addr)
     }
 
     /// Write word to memory
+    #[inline(always)]
     pub fn write_wide(&mut self, addr: u16, value: u16) {
         self.mmu.ww(addr, value);
     }
 
     /// Execute one instruction
+    #[inline]
     fn execute(&mut self) -> u32 {
         let opcode = self.fetchbyte();
         match opcode {
@@ -466,6 +480,7 @@ impl CPU {
     }
 
     /// Execute CB-prefixed instruction
+    #[inline]
     fn execute_cb(&mut self) -> u32 {
         let opcode = self.fetchbyte();
         let reg_idx = opcode & 0x07;
@@ -516,7 +531,11 @@ impl CPU {
         cycles
     }
 
-    // ALU operations
+    // =========================================================================
+    // ALU operations - ALL INLINED for performance
+    // =========================================================================
+
+    #[inline(always)]
     fn alu_add(&mut self, value: u8, with_carry: bool) {
         let carry = if with_carry && self.reg.flag(C) { 1 } else { 0 };
         let result = self.reg.a as u16 + value as u16 + carry as u16;
@@ -528,6 +547,7 @@ impl CPU {
         self.reg.set_flag(C, result > 0xFF);
     }
 
+    #[inline(always)]
     fn alu_sub(&mut self, value: u8, with_carry: bool) {
         let carry = if with_carry && self.reg.flag(C) { 1 } else { 0 };
         let result = self.reg.a as i16 - value as i16 - carry as i16;
@@ -539,6 +559,7 @@ impl CPU {
         self.reg.set_flag(C, result < 0);
     }
 
+    #[inline(always)]
     fn alu_and(&mut self, value: u8) {
         self.reg.a &= value;
         self.reg.set_flag(Z, self.reg.a == 0);
@@ -547,6 +568,7 @@ impl CPU {
         self.reg.set_flag(C, false);
     }
 
+    #[inline(always)]
     fn alu_or(&mut self, value: u8) {
         self.reg.a |= value;
         self.reg.set_flag(Z, self.reg.a == 0);
@@ -555,6 +577,7 @@ impl CPU {
         self.reg.set_flag(C, false);
     }
 
+    #[inline(always)]
     fn alu_xor(&mut self, value: u8) {
         self.reg.a ^= value;
         self.reg.set_flag(Z, self.reg.a == 0);
@@ -563,6 +586,7 @@ impl CPU {
         self.reg.set_flag(C, false);
     }
 
+    #[inline(always)]
     fn alu_cp(&mut self, value: u8) {
         let result = self.reg.a as i16 - value as i16;
         let half = (self.reg.a & 0x0F) as i16 - (value & 0x0F) as i16;
@@ -572,6 +596,7 @@ impl CPU {
         self.reg.set_flag(C, result < 0);
     }
 
+    #[inline(always)]
     fn alu_inc(&mut self, value: u8) -> u8 {
         let result = value.wrapping_add(1);
         self.reg.set_flag(Z, result == 0);
@@ -580,6 +605,7 @@ impl CPU {
         result
     }
 
+    #[inline(always)]
     fn alu_dec(&mut self, value: u8) -> u8 {
         let result = value.wrapping_sub(1);
         self.reg.set_flag(Z, result == 0);
@@ -588,6 +614,7 @@ impl CPU {
         result
     }
 
+    #[inline(always)]
     fn alu_add16(&mut self, value: u16) {
         let hl = self.reg.hl();
         let result = hl as u32 + value as u32;
@@ -597,6 +624,7 @@ impl CPU {
         self.reg.set_hl(result as u16);
     }
 
+    #[inline(always)]
     fn alu_daa(&mut self) {
         let mut a = self.reg.a as i16;
         if self.reg.flag(N) {
@@ -612,6 +640,7 @@ impl CPU {
         if a >= 0x100 { self.reg.set_flag(C, true); }
     }
 
+    #[inline(always)]
     fn alu_rlc(&mut self, value: u8) -> u8 {
         let carry = value >> 7;
         let result = (value << 1) | carry;
@@ -622,6 +651,7 @@ impl CPU {
         result
     }
 
+    #[inline(always)]
     fn alu_rrc(&mut self, value: u8) -> u8 {
         let carry = value & 1;
         let result = (value >> 1) | (carry << 7);
@@ -632,6 +662,7 @@ impl CPU {
         result
     }
 
+    #[inline(always)]
     fn alu_rl(&mut self, value: u8) -> u8 {
         let old_carry = if self.reg.flag(C) { 1 } else { 0 };
         let new_carry = value >> 7;
@@ -643,6 +674,7 @@ impl CPU {
         result
     }
 
+    #[inline(always)]
     fn alu_rr(&mut self, value: u8) -> u8 {
         let old_carry = if self.reg.flag(C) { 1 } else { 0 };
         let new_carry = value & 1;
@@ -654,6 +686,7 @@ impl CPU {
         result
     }
 
+    #[inline(always)]
     fn alu_sla(&mut self, value: u8) -> u8 {
         let carry = value >> 7;
         let result = value << 1;
@@ -664,6 +697,7 @@ impl CPU {
         result
     }
 
+    #[inline(always)]
     fn alu_sra(&mut self, value: u8) -> u8 {
         let carry = value & 1;
         let result = (value >> 1) | (value & 0x80);
@@ -674,6 +708,7 @@ impl CPU {
         result
     }
 
+    #[inline(always)]
     fn alu_srl(&mut self, value: u8) -> u8 {
         let carry = value & 1;
         let result = value >> 1;
@@ -684,6 +719,7 @@ impl CPU {
         result
     }
 
+    #[inline(always)]
     fn alu_swap(&mut self, value: u8) -> u8 {
         let result = (value >> 4) | (value << 4);
         self.reg.set_flag(Z, result == 0);
@@ -693,6 +729,7 @@ impl CPU {
         result
     }
 
+    #[inline(always)]
     fn alu_bit(&mut self, value: u8, bit: u8) {
         let result = value & (1 << bit);
         self.reg.set_flag(Z, result == 0);
@@ -700,6 +737,7 @@ impl CPU {
         self.reg.set_flag(H, true);
     }
 
+    #[inline(always)]
     fn cpu_jr(&mut self) {
         let n = self.fetchbyte() as i8;
         self.reg.pc = ((self.reg.pc as i32) + (n as i32)) as u16;

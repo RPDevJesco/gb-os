@@ -272,7 +272,7 @@ pub struct FramebufferInfo {
 pub fn allocate_framebuffer(width: u32, height: u32, depth: u32) -> Option<FramebufferInfo> {
     let mut mbox = MailboxBuffer::new();
 
-    // Build multi-tag request
+    // Build multi-tag request - MUST match working main.rs exactly!
     mbox.data[0] = 35 * 4;             // Buffer size
     mbox.data[1] = 0;                  // Request code
 
@@ -290,49 +290,43 @@ pub fn allocate_framebuffer(width: u32, height: u32, depth: u32) -> Option<Frame
     mbox.data[10] = width;
     mbox.data[11] = height;
 
-    // Set virtual offset
-    mbox.data[12] = tag::SET_VIRTUAL_OFFSET;
-    mbox.data[13] = 8;
-    mbox.data[14] = 8;
-    mbox.data[15] = 0;
-    mbox.data[16] = 0;
+    // Set depth (NO SET_VIRTUAL_OFFSET - it breaks things!)
+    mbox.data[12] = tag::SET_DEPTH;
+    mbox.data[13] = 4;
+    mbox.data[14] = 4;
+    mbox.data[15] = depth;
 
-    // Set depth
-    mbox.data[17] = tag::SET_DEPTH;
+    // Set pixel order (0 = BGR - this is what works!)
+    mbox.data[16] = tag::SET_PIXEL_ORDER;
+    mbox.data[17] = 4;
     mbox.data[18] = 4;
-    mbox.data[19] = 4;
-    mbox.data[20] = depth;
-
-    // Set pixel order (0 = BGR, 1 = RGB)
-    mbox.data[21] = tag::SET_PIXEL_ORDER;
-    mbox.data[22] = 4;
-    mbox.data[23] = 4;
-    mbox.data[24] = 1;                 // RGB
+    mbox.data[19] = 0;                 // BGR (not RGB!)
 
     // Allocate buffer
-    mbox.data[25] = tag::ALLOCATE_BUFFER;
-    mbox.data[26] = 8;
-    mbox.data[27] = 8;
-    mbox.data[28] = 16;                // Alignment
-    mbox.data[29] = 0;                 // Size (filled by response)
+    mbox.data[20] = tag::ALLOCATE_BUFFER;
+    mbox.data[21] = 8;
+    mbox.data[22] = 8;
+    mbox.data[23] = 16;                // Alignment -> becomes address
+    mbox.data[24] = 0;                 // -> becomes size
 
     // Get pitch
-    mbox.data[30] = tag::GET_PITCH;
-    mbox.data[31] = 4;
-    mbox.data[32] = 4;
-    mbox.data[33] = 0;
+    mbox.data[25] = tag::GET_PITCH;
+    mbox.data[26] = 4;
+    mbox.data[27] = 4;
+    mbox.data[28] = 0;                 // -> becomes pitch
 
     // End tag
-    mbox.data[34] = tag::END;
+    mbox.data[29] = tag::END;
 
     if !call(&mut mbox, Channel::PropertyArmToVc) {
         return None;
     }
 
     // Extract results (convert bus address to ARM physical)
-    let fb_addr = mbox.data[28] & 0x3FFF_FFFF;
-    let fb_size = mbox.data[29];
-    let pitch = mbox.data[33];
+    // Results are at the same indices as the input values
+    let fb_addr = mbox.data[23] & 0x3FFF_FFFF;
+    let fb_size = mbox.data[24];
+    let pitch = mbox.data[28];
 
     if fb_addr == 0 || fb_size == 0 {
         return None;

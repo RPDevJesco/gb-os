@@ -4,6 +4,8 @@
 //! 160x144 pixel display at ~60fps.
 //!
 //! Based on rboy by mvdnes, adapted for bare-metal VGA output.
+//!
+//! OPTIMIZED VERSION: Added #[inline] hints for ARM bare-metal performance.
 
 extern crate alloc;
 
@@ -138,34 +140,41 @@ impl GPU {
     // Palette Accessors (for VGA DAC sync)
     // =========================================================================
 
+    #[inline(always)]
     pub fn get_pal_data(&self) -> &[u8] {
         &self.pal_data
     }
 
+    #[inline(always)]
     pub fn get_cbgpal(&self) -> &[[[u8; 3]; 4]; 8] {
         &self.cbgpal
     }
 
+    #[inline(always)]
     pub fn get_csprit(&self) -> &[[[u8; 3]; 4]; 8] {
         &self.csprit
     }
 
+    #[inline(always)]
     pub fn get_palb(&self) -> &[u8; 4] {
         &self.palb
     }
 
+    #[inline(always)]
     pub fn get_pal0(&self) -> &[u8; 4] {
         &self.pal0
     }
 
+    #[inline(always)]
     pub fn get_pal1(&self) -> &[u8; 4] {
         &self.pal1
     }
 
     // =========================================================================
-    // Cycle processing (matches original rboy)
+    // Cycle processing
     // =========================================================================
 
+    #[inline]
     pub fn do_cycle(&mut self, ticks: u32) {
         if !self.lcd_on {
             return;
@@ -212,12 +221,14 @@ impl GPU {
         }
     }
 
+    #[inline(always)]
     fn check_interrupt_lyc(&mut self) {
         if self.lyc_inte && self.line == self.lyc {
             self.interrupt |= 0x02;
         }
     }
 
+    #[inline]
     fn change_mode(&mut self, mode: u8) {
         self.mode = mode;
 
@@ -248,14 +259,16 @@ impl GPU {
         }
     }
 
+    #[inline(always)]
     pub fn may_hdma(&self) -> bool {
         self.hblanking
     }
 
     // =========================================================================
-    // Memory access
+    // Memory access - CRITICAL HOT PATH
     // =========================================================================
 
+    #[inline(always)]
     pub fn rb(&self, a: u16) -> u8 {
         match a {
             0x8000..=0x9FFF => self.vram[(self.vrambank * 0x2000) | (a as usize & 0x1FFF)],
@@ -318,14 +331,17 @@ impl GPU {
         }
     }
 
+    #[inline(always)]
     fn rbvram0(&self, a: u16) -> u8 {
         self.vram[a as usize & 0x1FFF]
     }
 
+    #[inline(always)]
     fn rbvram1(&self, a: u16) -> u8 {
         self.vram[0x2000 + (a as usize & 0x1FFF)]
     }
 
+    #[inline(always)]
     pub fn wb(&mut self, a: u16, v: u8) {
         match a {
             0x8000..=0x9FFF => self.vram[(self.vrambank * 0x2000) | (a as usize & 0x1FFF)] = v,
@@ -443,6 +459,7 @@ impl GPU {
         self.updated = true;
     }
 
+    #[inline(always)]
     fn update_pal(&mut self) {
         for i in 0..4 {
             self.palb[i] = GPU::get_monochrome_pal_val(self.palbr, i);
@@ -451,6 +468,7 @@ impl GPU {
         }
     }
 
+    #[inline(always)]
     fn get_monochrome_pal_val(value: u8, index: usize) -> u8 {
         match (value >> (2 * index)) & 0x03 {
             0 => 255,
@@ -460,6 +478,7 @@ impl GPU {
         }
     }
 
+    #[inline]
     fn renderscan(&mut self) {
         if self.first_frame {
             return;
@@ -474,27 +493,32 @@ impl GPU {
         self.draw_sprites();
     }
 
+    #[inline(always)]
     fn setcolor(&mut self, x: usize, color: u8) {
-        self.data[self.line as usize * SCREEN_W * 3 + x * 3 + 0] = color;
-        self.data[self.line as usize * SCREEN_W * 3 + x * 3 + 1] = color;
-        self.data[self.line as usize * SCREEN_W * 3 + x * 3 + 2] = color;
+        let base = self.line as usize * SCREEN_W * 3 + x * 3;
+        self.data[base] = color;
+        self.data[base + 1] = color;
+        self.data[base + 2] = color;
     }
 
+    #[inline(always)]
     fn setpal(&mut self, x: usize, pal_idx: u8) {
         self.pal_data[self.line as usize * SCREEN_W + x] = pal_idx;
     }
 
+    #[inline(always)]
     fn setrgb(&mut self, x: usize, r: u8, g: u8, b: u8) {
         let baseidx = self.line as usize * SCREEN_W * 3 + x * 3;
         let r = r as u32;
         let g = g as u32;
         let b = b as u32;
         // GBC color correction from Gambatte
-        self.data[baseidx + 0] = ((r * 13 + g * 2 + b) >> 1) as u8;
+        self.data[baseidx] = ((r * 13 + g * 2 + b) >> 1) as u8;
         self.data[baseidx + 1] = ((g * 3 + b) << 1) as u8;
         self.data[baseidx + 2] = ((r * 3 + g * 2 + b * 11) >> 1) as u8;
     }
 
+    #[inline]
     fn draw_bg(&mut self) {
         let drawbg = self.gbmode == GbMode::Color || self.lcdc0;
 
@@ -600,6 +624,7 @@ impl GPU {
         }
     }
 
+    #[inline]
     fn draw_sprites(&mut self) {
         if !self.sprite_on {
             return;
@@ -613,7 +638,7 @@ impl GPU {
 
         for index in 0..40u8 {
             let spriteaddr = 0xFE00 + (index as u16) * 4;
-            let spritey = self.rb(spriteaddr + 0) as u16 as i32 - 16;
+            let spritey = self.rb(spriteaddr) as u16 as i32 - 16;
             if line < spritey || line >= spritey + sprite_size {
                 continue;
             }
@@ -704,6 +729,7 @@ impl GPU {
 }
 
 // Sprite ordering functions
+#[inline(always)]
 fn dmg_sprite_order(a: &(i32, i32, u8), b: &(i32, i32, u8)) -> Ordering {
     if a.0 != b.0 {
         return b.0.cmp(&a.0);
@@ -711,6 +737,7 @@ fn dmg_sprite_order(a: &(i32, i32, u8), b: &(i32, i32, u8)) -> Ordering {
     b.2.cmp(&a.2)
 }
 
+#[inline(always)]
 fn cgb_sprite_order(a: &(i32, i32, u8), b: &(i32, i32, u8)) -> Ordering {
     b.2.cmp(&a.2)
 }
