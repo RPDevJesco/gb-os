@@ -754,37 +754,26 @@ impl Framebuffer {
         }
     }
 
-    /// PERF: Optimized GBC blit using slice iteration instead of idx*3 multiplication
-    /// Avoids repeated multiplication and bounds checking in inner loop
     fn blit_gb_screen_gbc(&self, rgb_data: &[u8]) {
+        // Temp buffer for one scaled scanline (320 pixels)
         let mut scanline = [0u32; GB_WIDTH * GB_SCALE];
+
         let base = self.addr as *mut u32;
         let pitch_words = (self.pitch / 4) as usize;
-        let row_stride = GB_WIDTH * 3;
 
         for y in 0..GB_HEIGHT {
-            // Get slice for this row's RGB data
-            let row_start = y * row_stride;
-            let row_end = row_start + row_stride;
-            let row = &rgb_data[row_start..row_end];
+            let src_row = y * GB_WIDTH * 3;
 
-            // Build scaled scanline using direct pointer writes
-            let mut dst_x = 0usize;
-            let mut src_idx = 0usize;
-            while src_idx + 2 < row.len() {
-                // Pack RGB into ARGB32 - avoid repeated indexing
-                let r = row[src_idx] as u32;
-                let g = row[src_idx + 1] as u32;
-                let b = row[src_idx + 2] as u32;
-                let color = 0xFF00_0000 | (r << 16) | (g << 8) | b;
+            // Build scaled scanline in temp buffer
+            for x in 0..GB_WIDTH {
+                let idx = src_row + x * 3;
+                let color = 0xFF000000
+                    | ((rgb_data[idx] as u32) << 16)
+                    | ((rgb_data[idx + 1] as u32) << 8)
+                    | (rgb_data[idx + 2] as u32);
 
-                // Write two horizontally scaled pixels directly
-                unsafe {
-                    *scanline.as_mut_ptr().add(dst_x) = color;
-                    *scanline.as_mut_ptr().add(dst_x + 1) = color;
-                }
-                dst_x += 2;
-                src_idx += 3;
+                scanline[x * 2] = color;
+                scanline[x * 2 + 1] = color;
             }
 
             // Copy scanline twice for 2x vertical scaling
@@ -798,28 +787,21 @@ impl Framebuffer {
         }
     }
 
-    /// PERF: Optimized DMG blit using iterator and direct pointer writes
-    /// Avoids repeated bounds checking and uses precomputed palette lookup
     fn blit_gb_screen_dmg(&self, pal_data: &[u8]) {
         let mut scanline = [0u32; GB_WIDTH * GB_SCALE];
+
         let base = self.addr as *mut u32;
         let pitch_words = (self.pitch / 4) as usize;
-        let palette = &GB_PALETTE;
 
         for y in 0..GB_HEIGHT {
-            // Get slice for this row
-            let row_start = y * GB_WIDTH;
-            let row = &pal_data[row_start..row_start + GB_WIDTH];
+            let src_row = y * GB_WIDTH;
 
-            // Build scaled scanline using direct pointer writes
-            let mut dst_x = 0usize;
-            for &p in row.iter() {
-                let color = if (p as usize) < 4 { palette[p as usize] } else { BLACK };
-                unsafe {
-                    *scanline.as_mut_ptr().add(dst_x) = color;
-                    *scanline.as_mut_ptr().add(dst_x + 1) = color;
-                }
-                dst_x += 2;
+            // Build scaled scanline
+            for x in 0..GB_WIDTH {
+                let pal_idx = pal_data[src_row + x] as usize;
+                let color = if pal_idx < 4 { GB_PALETTE[pal_idx] } else { BLACK };
+                scanline[x * 2] = color;
+                scanline[x * 2 + 1] = color;
             }
 
             // Copy twice for vertical scaling
