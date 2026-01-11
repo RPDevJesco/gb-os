@@ -1,0 +1,19 @@
+# =============================================================================
+# rust-toolchain.toml - Rust Toolchain Configuration
+# =============================================================================
+# This ensures everyone uses the same nightly compiler with required components.
+# build-std requires nightly Rust.
+# =============================================================================
+
+[toolchain]
+channel = "nightly"
+components = [
+    "rust-src",      # Required for build-std
+    "llvm-tools",    # Required for objcopy
+    "rustfmt",       # Code formatting
+    "clippy",        # Linting
+]
+targets = [
+    "aarch64-unknown-none-softfloat",  # Main target
+    "aarch64-unknown-none",            # Alternative with hardware FP
+]

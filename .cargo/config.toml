@@ -1,0 +1,29 @@
+# =============================================================================
+# .cargo/config.toml - Cargo Configuration for Bare-Metal Build
+# =============================================================================
+# This tells Cargo to use our custom linker script and sets up the build
+# environment for the Raspberry Pi Zero 2W bare-metal target.
+# =============================================================================
+
+[build]
+# Default target for this project
+target = "aarch64-unknown-none-softfloat"
+
+[target.aarch64-unknown-none-softfloat]
+# Use our custom linker script
+rustflags = [
+    "-C", "link-arg=-Tsrc/platform/rpi-zero2/linker.ld",
+    "-C", "link-arg=--gc-sections",
+]
+
+[target.aarch64-unknown-none]
+# Alternative target with hardware floating point
+rustflags = [
+    "-C", "link-arg=-Tsrc/platform/rpi-zero2/linker.ld",
+    "-C", "link-arg=--gc-sections",
+]
+
+[unstable]
+# Enable build-std for no_std targets
+build-std = ["core", "alloc"]
+build-std-features = ["compiler-builtins-mem"]

@@ -1,25 +1,53 @@
-# Build outputs
-/build/
+# =============================================================================
+# .gitignore - Git Ignore Rules
+# =============================================================================
+
+# Build artifacts
+/target/
 /output/
-/roms
+/sdcard_output/
 *.img
-*.bin
+*.elf
+*.o
+*.a
 
-# Rust build artifacts
-/kernel/target/
-**/*.rs.bk
+# Cargo lock file (optional - some prefer to commit this)
+# Cargo.lock
 
-# IDE
-.vscode/
+# IDE and editor files
 .idea/
+.vscode/
 *.swp
 *.swo
 *~
-
-# OS files
 .DS_Store
 Thumbs.db
+*.sublime-project
+*.sublime-workspace
 
-# Archives
-*.tar.gz
-*.zip
+# Environment files
+.env
+.env.local
+*.local
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.bak
+
+# OS-specific files
+.DS_Store
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Desktop.ini
+
+# Downloaded firmware files
+bootcode.bin
+start.elf
+fixup.dat

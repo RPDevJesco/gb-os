@@ -1,38 +1,46 @@
-# Rustacean OS Docker Ignore
+# =============================================================================
+# .dockerignore - Files to exclude from Docker build context
+# =============================================================================
 
-# Output directories
+# Build artifacts
+target/
 output/
-build/
+*.img
+sdcard_output/
 
-# Rust build artifacts
-kernel/target/
-tools/mkgamedisk/target/
-
-# Git
+# Version control
 .git/
 .gitignore
+.gitattributes
 
-# IDE
-.vscode/
+# IDE and editor files
 .idea/
+.vscode/
 *.swp
 *.swo
 *~
-
-# OS files
 .DS_Store
 Thumbs.db
 
-# Docker files
-docker-compose.yml
+# Documentation (not needed in build)
+*.md
+!README.md
+docs/
 
-# Archives
-*.tar.gz
-*.zip
+# Test files
+tests/
+*.test
 
-# ROM files (don't include in build context)
-*.gb
-*.gbc
+# Local configuration
+.env
+.env.local
+*.local
 
-# Test output
-*.img
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
+*.tmp

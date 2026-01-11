@@ -1,78 +1,35 @@
-# gb-os Build Environment
-#
-# Builds the kernel and bootloader in an isolated container
-# with all necessary toolchain components.
-#
-# Supports:
-#   - Floppy disk images (1.44MB)
-#   - CD-ROM images with El Torito no-emulation boot
-#   - USB/HDD raw disk images
-#   - UEFI boot preparation (future)
-#
-# Usage:
-#   docker build -t gb-os-builder .
-#   docker run --rm -v "$(pwd)/output:/output" gb-os-builder
-#   docker run --rm -v "$(pwd)/output:/output" gb-os-builder /build.sh --gameboy
-#
-# Windows (PowerShell):
-#   docker build -t gb-os-builder .
-#   docker run --rm -v "${PWD}/output:/output" gb-os-builder
-#
-# Windows (CMD):
-#   docker build -t gb-os-builder .
-#   docker run --rm -v "%cd%/output:/output" gb-os-builder
+# =============================================================================
+# Dockerfile - Rust Cross-Compilation Environment for RPi Zero 2W Bare-Metal
+# =============================================================================
 
-FROM ubuntu:24.04
+FROM rust:latest
 
-LABEL maintainer="gb-os Contributors"
-LABEL description="Build environment for gb-os (GameBoy bare-metal emulator)"
+LABEL maintainer="GB-OS Bare-Metal"
+LABEL description="Build environment for RPi Zero 2W bare-metal Game Boy emulator"
 
-# Avoid interactive prompts during package installation
-ENV DEBIAN_FRONTEND=noninteractive
-
-# Install build dependencies
+# Install additional tools
 RUN apt-get update && apt-get install -y \
-    curl \
     build-essential \
-    binutils \
-    nasm \
-    xorriso \
-    grub-pc-bin \
-    grub-common \
-    grub2-common \
-    mtools \
-    dosfstools \
-    qemu-system-x86 \
-    genisoimage \
-    dos2unix \
+    curl \
+    wget \
+    zip \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Rust nightly
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
-    sh -s -- -y --default-toolchain nightly
+# Pin to a specific nightly to avoid sync issues on every run
+RUN rustup default nightly-2025-01-07
 
-# Add Rust to PATH
-ENV PATH="/root/.cargo/bin:${PATH}"
+# Add the bare-metal AArch64 targets
+RUN rustup target add aarch64-unknown-none-softfloat
+RUN rustup target add aarch64-unknown-none
 
-# Install rust-src component for building core/alloc
-RUN rustup component add rust-src --toolchain nightly
+# Add required components
+RUN rustup component add rust-src
+RUN rustup component add llvm-tools
 
-# Create working directory
-WORKDIR /gb-os
+# Install cargo-binutils for objcopy
+RUN cargo install cargo-binutils
 
-# Copy project files
-COPY boot/ ./boot/
-COPY kernel/ ./kernel/
-COPY tools/ ./tools/
-COPY i686-rustacean.json ./
-COPY Makefile ./
-COPY build.sh /build.sh
+WORKDIR /project
 
-# Ensure .cargo config directory exists (config.toml is copied from repo)
-RUN mkdir -p kernel/.cargo
-
-# Fix line endings (Windows CRLF -> Unix LF) and make executable
-RUN dos2unix /build.sh 2>/dev/null || true && chmod +x /build.sh && mkdir -p /output
-
-# Default command runs the GameBoy build
-CMD ["/build.sh", "--gameboy"]
+ENTRYPOINT ["/bin/bash", "-c"]
+CMD ["chmod +x ./docker-entrypoint.sh 2>/dev/null; ./docker-entrypoint.sh"]

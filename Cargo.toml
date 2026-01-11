@@ -1,0 +1,39 @@
+[package]
+name = "gb-os-baremetal"
+version = "0.1.0"
+edition = "2024"
+authors = ["Jesco"]
+description = "Game Boy/Color emulator for Raspberry Pi Zero 2W bare-metal"
+
+[lib]
+name = "gameboy"
+path = "src/gameboy/lib.rs"
+
+[[bin]]
+name = "kernel8"
+path = "src/platform/rpi-zero2/main.rs"
+
+[features]
+default = ["gpi_case_2w"]
+gpi_case_2w = []
+audio = []
+debug_uart = []
+
+[dependencies]
+# No external dependencies for true bare-metal
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+debug = false
+
+[profile.release-debug]
+inherits = "release"
+debug = true
+strip = false
