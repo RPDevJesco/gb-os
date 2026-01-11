@@ -1,0 +1,1 @@
+This is a rebuild of the entire project that i've been working on, the API is much different from the master branch and thus, x86 doesn't exist in this one as of yet. This was done because there was a bug that I needed to isolate and resolve with the fps.
